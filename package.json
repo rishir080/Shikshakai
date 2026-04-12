@@ -1,5 +1,7 @@
 {
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "recharts": "^3.7.0",
     "tesseract.js": "^7.0.0"
   }
 }
