@@ -686,6 +686,174 @@ async def download_pdf():
     return {"status": "error", "message": "No PDF generated yet"}
 
 
+# ─────────────────────────────────────────────
+# ENDPOINT 6 — Autonomous Evaluator (Pro Mode)
+# ─────────────────────────────────────────────
+class EvaluateProRequest(BaseModel):
+    pdfBase64: str
+    question_paper_text: str
+    model_answers_text: str = ""
+    total_marks: int = 100
+    target_model: str = "tesseract" # Local engine for bounding boxes
+
+@app.post("/api/evaluate-pro")
+async def evaluate_pro(req: EvaluateProRequest):
+    """
+    1. Extracts images from PDF.
+    2. Runs local OCR to get text + bounding boxes.
+    3. Calls LLM with strict Prompt.
+    4. Annotates images with Red Pen.
+    5. Generates Pro Report PDF.
+    """
+    try:
+        from evaluator_pro import ProEvaluator
+        import uuid
+        
+        pdf_bytes = base64.b64decode(req.pdfBase64)
+        images = _pdf_bytes_to_images(pdf_bytes)
+        
+        if not images:
+            return {"status": "error", "message": "No pages in PDF"}
+            
+        pro_eval = ProEvaluator()
+        
+        # --- 1. OCR Stage (Parallelized) ---
+        print(f"🔍 [PRO-MODE] Starting Parallel OCR Extraction for {len(images)} pages...")
+        loop = asyncio.get_event_loop()
+        
+        async def process_page(idx, img_obj):
+            engine_to_use = req.target_model if req.target_model in ["tesseract", "paddleocr", "easyocr"] else "tesseract"
+            def _ocr(img):
+                return comparer.run_page(img, engine_to_use).get(engine_to_use, {})
+            
+            res = await loop.run_in_executor(executor, _ocr, img_obj)
+            return idx, res.get("text", ""), res.get("detections", [])
+
+        # Launch all pages in parallel
+        tasks = [process_page(i, img) for i, img in enumerate(images)]
+        results = await asyncio.gather(*tasks)
+        
+        # Sort results by index to preserve order
+        results.sort(key=lambda x: x[0])
+        
+        full_text_chunks = []
+        page_detections_map = {}
+        for idx, text, detections in results:
+            page_detections_map[idx] = detections
+            full_text_chunks.append(f"── Page {idx+1} ──\n{text}")
+            
+        # --- 2. Two-Stage LLM Evaluation ---
+        print("🧠 [PRO-MODE] Starting LLM Evaluation...")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_key:
+            return {"status": "error", "message": "GEMINI_API_KEY missing for Pro Mode"}
+            
+        student_text = "\n\n".join(full_text_chunks)
+        
+        PROMPT = f"""You are a strict University Examiner.
+Evaluate this student answer sheet.
+Question Paper: {req.question_paper_text}
+Reference Scheme: {req.model_answers_text}
+Total Max Marks: {req.total_marks}
+
+STUDENT ANSWERS:
+{student_text}
+
+Rules:
+1. Module-wise selection: If student attempts multiple OR questions in a module, grade both but select ONLY the highest-scoring one.
+2. Max marks cap.
+3. Be precise with mistakes.
+
+JSON FORMAT REQUIRED:
+{{
+  "questions": [
+    {{
+      "question_no": "1a",
+      "marks_awarded": 2,
+      "marks_total": 5,
+      "status": "partial",
+      "mistakes": [
+        {{"text": "wrong concept mentioned here", "marks_deducted": 2, "comment": "Incorrect formula"}}
+      ],
+      "correct_parts": [
+        {{"text": "correct definition text", "marks_awarded": 2}}
+      ],
+      "red_pen_comment": "Missing diagram",
+      "page_no": 1
+    }}
+  ],
+  "total_awarded": 2,
+  "total_possible": 5,
+  "percentage": 40,
+  "grade": "D",
+  "overall_feedback": "Needs improvement.",
+  "mark_loss_analysis": [
+    "Formula incorrect (-2)"
+  ]
+}}"""
+        
+        import json, requests as req_lib
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+        payload = {
+            "contents": [{"parts": [{"text": PROMPT}]}],
+            "generationConfig": {"responseMimeType": "application/json"}
+        }
+        resp = await asyncio.to_thread(lambda: req_lib.post(url, json=payload, timeout=120))
+        resp.raise_for_status()
+        text_resp = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        if text_resp.startswith("```"):
+            text_resp = text_resp.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            
+        eval_data = json.loads(text_resp)
+        print("✅ [PRO-MODE] Evaluation Complete.")
+        
+        # --- 3. Annotation Stage ---
+        print("🖌️ [PRO-MODE] Drawing Red Pen annotations...")
+        annotated_images = []
+        
+        # Group questions by page
+        page_to_qs = {}
+        for q in eval_data.get("questions", []):
+            p = int(q.get("page_no", 1)) - 1
+            if p not in page_to_qs:
+                page_to_qs[p] = []
+            page_to_qs[p].append(q)
+            
+        for i, img in enumerate(images):
+            # Annotate only if there are evaluations for this page
+            if i in page_to_qs:
+                page_eval = {"questions": page_to_qs[i]}
+                ann_img = pro_eval.annotate_page(img, page_eval, page_detections_map[i])
+                annotated_images.append(ann_img)
+            else:
+                annotated_images.append(img) # Unchanged
+                
+        # --- 4. Report Generation ---
+        report_path = pro_eval.generate_professional_report(annotated_images, eval_data)
+        
+        # Generate unique filename
+        filename = f"pro_report_{uuid.uuid4().hex[:6]}.pdf"
+        os.rename(report_path, filename)
+        
+        print(f"📄 [PRO-MODE] Report ready: {filename}")
+        
+        return {
+            "status": "success", 
+            "evaluation": eval_data, 
+            "pdf_url": f"/api/download-report/{filename}"
+        }
+        
+    except Exception as e:
+        print(f"❌ [PRO-MODE] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/download-report/{filename}")
+async def download_pro_report(filename: str):
+    if os.path.exists(filename):
+        return FileResponse(filename, media_type="application/pdf", filename="ShikshakAI_Pro_Report.pdf")
+    return {"status": "error", "message": "Report not found"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8080)
