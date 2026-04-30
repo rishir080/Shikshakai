@@ -1,0 +1,83 @@
+
+/* ShikshakAI Premium Dashboard Styles */
+:root {
+  --bg:#020208; --surface:rgba(10,10,28,0.65); --surface2:rgba(18,18,38,0.85); --surface3:rgba(22,22,44,0.95);
+  --border:rgba(255,255,255,0.06); --border2:rgba(255,255,255,0.14);
+  --accent:#8b7eff; --accent-dim:#5a4fcf; --accent-glow:rgba(139,126,255,0.25);
+  --accent2:#ff6aa5; --accent3:#00edad; --gold:#ffd580; --blue:#6cc2ff;
+  --text:#f0f0ff; --text2:#b0b0d0; --muted:#5c5c7c;
+  --radius:18px; --radius-sm:12px; --radius-lg:28px; --radius-xl:36px;
+  --font-serif:'Fraunces', Georgia, serif; 
+  --font-sans:'Outfit', 'DM Sans', system-ui, sans-serif; 
+  --font-mono:'JetBrains Mono', monospace;
+  --sidebar-w:270px;
+}
+
+body {
+  background: var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* ── AURORA BACKGROUND ── */
+.aurora-wrap {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+}
+.aurora-blob {
+  position: absolute; width: 600px; height: 600px; border-radius: 50%; opacity: 0.15; filter: blur(80px);
+  animation: auroraFloat 20s infinite alternate ease-in-out;
+}
+.blob-1 { background: var(--accent); top: -10%; left: -10%; animation-duration: 25s; }
+.blob-2 { background: var(--accent3); bottom: -10%; right: -10%; animation-duration: 18s; animation-delay: -5s; }
+.blob-3 { background: var(--accent2); top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 0.08; }
+
+@keyframes auroraFloat {
+  0% { transform: translate(0,0) scale(1); }
+  50% { transform: translate(50px, 30px) scale(1.1); }
+  100% { transform: translate(-20px, 60px) scale(0.9); }
+}
+
+/* ── TYPOGRAPHY ── */
+.premium-title { font-family: var(--font-serif); font-weight: 500; font-style: italic; letter-spacing: -0.02em; }
+.label-caps { font-size: 10px; font-weight: 800; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+
+/* ── LAYOUT ── */
+.edu-app { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0; background: rgba(5,5,15,0.8); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 100;
+  backdrop-filter: blur(40px); -webkit-backdrop-filter: blur(40px);
+}
+.main { margin-left: var(--sidebar-w); flex: 1; padding: 60px 80px; min-height: 100vh; max-width: calc(100vw - var(--sidebar-w)); }
+
+/* ── COMPONENT BASICS ── */
+.glass {
+  background: rgba(255,255,255,0.02); 
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.07);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  border-radius: var(--radius);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.12);
+  transform: translateY(-2px);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 20px var(--accent-glow);
+}
+
+.stat-card { @extend .glass; padding: 24px; position: relative; }
+.panel { @extend .glass; border-radius: var(--radius-lg); padding: 32px; margin-bottom: 24px; }
+
+/* ── UTILITIES ── */
+.shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+  background-size: 200% 100%; animation: shimmer 2s infinite;
+}
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
