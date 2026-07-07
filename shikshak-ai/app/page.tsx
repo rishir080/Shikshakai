@@ -6,11 +6,12 @@ import {
 } from "recharts";
 import { useRouter } from "next/navigation";
 import { generateAILesson } from "@/lib/ai";
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
+import GlossaryPage from "./views/GlossaryView";
 
 type EvalStep = "idle" | "ocr" | "ai" | "done";
-type Page = "dashboard" | "attendance" | "lesson" | "study" | "paper" | "announcements" | "analytics" | "quiz" | "settings";
+type Page = "dashboard" | "attendance" | "lesson" | "study" | "paper" | "announcements" | "analytics" | "quiz" | "settings" | "glossary";
 
 // ─────────────────────────────────────────────
 // STYLES
@@ -431,22 +432,23 @@ const STYLES = `
 // CONSTANTS
 // ─────────────────────────────────────────────
 const NAV_MAIN = [
-  { id:"dashboard",     icon:"⚡", label:"Dashboard"        },
-  { id:"analytics",     icon:"📊", label:"Analytics"        },
-  { id:"attendance",    icon:"✅", label:"Attendance"        },
-  { id:"announcements", icon:"📢", label:"Announcements"    },
+  { id: "dashboard", icon: "⚡", label: "Dashboard" },
+  { id: "analytics", icon: "📊", label: "Analytics" },
+  { id: "attendance", icon: "✅", label: "Attendance" },
+  { id: "announcements", icon: "📢", label: "Announcements" },
 ];
 const NAV_TOOLS = [
-  { id:"quiz",    icon:"🎯", label:"Quiz & Tests",     badge:"NEW" },
-  { id:"lesson",  icon:"📋", label:"Lesson Planner"    },
-  { id:"study",   icon:"🔬", label:"Study Tool"        },
-  { id:"paper",   icon:"📄", label:"Document AI",      badge:"AI"  },
+  { id: "quiz", icon: "🎯", label: "Quiz & Tests", badge: "NEW" },
+  { id: "lesson", icon: "📋", label: "Lesson Planner" },
+  { id: "study", icon: "🔬", label: "Study Tool" },
+  { id: "paper", icon: "📄", label: "Document AI", badge: "AI" },
+  { id: "glossary", icon: "📖", label: "Smart Glossary", badge: "NEW" },
 ];
 const GRADE_GROUPS = [
-  { label:"School", opts:["Grade 6","Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"] },
-  { label:"College", opts:["1st Year","2nd Year","3rd Year","4th Year","Postgraduate Y1","Postgraduate Y2","PhD"] },
+  { label: "School", opts: ["Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"] },
+  { label: "College", opts: ["1st Year", "2nd Year", "3rd Year", "4th Year", "Postgraduate Y1", "Postgraduate Y2", "PhD"] },
 ];
-const PIE_COLORS = ["#7c6fff","#00dba0","#ffcc5c","#ff5fa0","#5ab4ff","#ff8c42"];
+const PIE_COLORS = ["#7c6fff", "#00dba0", "#ffcc5c", "#ff5fa0", "#5ab4ff", "#ff8c42"];
 
 // ─────────────────────────────────────────────
 // HELPER COMPONENTS
@@ -455,9 +457,9 @@ function CustomTooltip({ active, payload, label }: any) {
   if (active && payload?.length) {
     return (
       <div className="custom-tooltip">
-        <p style={{fontWeight:600,marginBottom:3}}>{label}</p>
-        {payload.map((p:any,i:number)=>(
-          <p key={i} style={{color:p.color||"var(--accent)"}}>{p.name}: {p.value}{typeof p.value==="number"&&p.name!=="Students"?"%":""}</p>
+        <p style={{ fontWeight: 600, marginBottom: 3 }}>{label}</p>
+        {payload.map((p: any, i: number) => (
+          <p key={i} style={{ color: p.color || "var(--accent)" }}>{p.name}: {p.value}{typeof p.value === "number" && p.name !== "Students" ? "%" : ""}</p>
         ))}
       </div>
     );
@@ -465,50 +467,50 @@ function CustomTooltip({ active, payload, label }: any) {
   return null;
 }
 
-function LessonSection({ icon, title, body }: { icon:string; title:string; body:string }) {
-  const [open,setOpen]=useState(true);
+function LessonSection({ icon, title, body }: { icon: string; title: string; body: string }) {
+  const [open, setOpen] = useState(true);
   return (
     <div className="lesson-section">
-      <div className="lesson-section-header" onClick={()=>setOpen(!open)}>
+      <div className="lesson-section-header" onClick={() => setOpen(!open)}>
         <div className="lesson-section-icon">{icon}</div>
         <div className="lesson-section-title">{title}</div>
-        <span style={{color:"var(--muted)",fontSize:10,transform:open?"rotate(180deg)":"none",transition:"transform 0.25s",display:"inline-block"}}>▼</span>
+        <span style={{ color: "var(--muted)", fontSize: 10, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.25s", display: "inline-block" }}>▼</span>
       </div>
       {open && <div className="lesson-section-body">{body}</div>}
     </div>
   );
 }
 
-function UploadZone({ icon,label,desc,required,setter,file }:{ icon:string;label:string;desc:string;required:boolean;setter:(f:File|null)=>void;file:File|null }) {
+function UploadZone({ icon, label, desc, required, setter, file }: { icon: string; label: string; desc: string; required: boolean; setter: (f: File | null) => void; file: File | null }) {
   return (
-    <div className={`upload-zone ${file?"has-file":""}`}>
+    <div className={`upload-zone ${file ? "has-file" : ""}`}>
       <div className="upload-zone-inner">
-        <div className="upload-zone-icon">{file?"✅":icon}</div>
-        <div style={{flex:1,minWidth:0}}>
+        <div className="upload-zone-icon">{file ? "✅" : icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div className="upload-zone-label">
             {label}
-            {required?<span className="upload-req-badge">Required</span>:<span className="upload-opt-badge">Optional</span>}
+            {required ? <span className="upload-req-badge">Required</span> : <span className="upload-opt-badge">Optional</span>}
           </div>
-          <div className={`upload-zone-desc ${file?"success":""}`}>{file?`✓ ${file.name}`:desc}</div>
+          <div className={`upload-zone-desc ${file ? "success" : ""}`}>{file ? `✓ ${file.name}` : desc}</div>
         </div>
-        <span style={{fontSize:11,color:"var(--accent)",fontWeight:500,flexShrink:0,paddingLeft:12}}>{file?"Change":"Upload ↑"}</span>
+        <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 500, flexShrink: 0, paddingLeft: 12 }}>{file ? "Change" : "Upload ↑"}</span>
       </div>
-      <input type="file" accept="image/*,.pdf" onChange={e=>setter(e.target.files?.[0]||null)}/>
+      <input type="file" accept="image/*,.pdf" onChange={e => setter(e.target.files?.[0] || null)} />
     </div>
   );
 }
 
-function StudyCard({ icon,title,subtitle,children }:{ icon:string;title:string;subtitle:string;children:React.ReactNode }) {
-  const [open,setOpen]=useState(true);
+function StudyCard({ icon, title, subtitle, children }: { icon: string; title: string; subtitle: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true);
   return (
     <div className="study-card">
-      <div className={`study-card-header ${open?"open":""}`} onClick={()=>setOpen(!open)}>
+      <div className={`study-card-header ${open ? "open" : ""}`} onClick={() => setOpen(!open)}>
         <div className="study-card-icon">{icon}</div>
-        <div style={{flex:1}}>
+        <div style={{ flex: 1 }}>
           <div className="study-card-title">{title}</div>
           <div className="study-card-sub">{subtitle}</div>
         </div>
-        <span style={{color:"var(--muted)",fontSize:10,transform:open?"rotate(180deg)":"none",transition:"transform 0.25s",display:"inline-block"}}>▼</span>
+        <span style={{ color: "var(--muted)", fontSize: 10, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.25s", display: "inline-block" }}>▼</span>
       </div>
       {open && <div className="study-card-body">{children}</div>}
     </div>
@@ -520,10 +522,10 @@ function StudyCard({ icon,title,subtitle,children }:{ icon:string;title:string;s
 // This is what students see in the SAME browser tab
 // ─────────────────────────────────────────────
 function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: any) => void }) {
-  const [answers, setAnswers] = useState<Record<number,number>>({});
+  const [answers, setAnswers] = useState<Record<number, number>>({});
   const [timeLeft, setTimeLeft] = useState(quiz.duration * 60);
-  const [logs, setLogs] = useState<{t:string;msg:string;type:string}[]>([]);
-  const [faceStatus, setFaceStatus] = useState<"ok"|"warn"|"fail">("ok");
+  const [logs, setLogs] = useState<{ t: string; msg: string; type: string }[]>([]);
+  const [faceStatus, setFaceStatus] = useState<"ok" | "warn" | "fail">("ok");
   const [tabViolations, setTabViolations] = useState(0);
   const [faceViolations, setFaceViolations] = useState(0);
   const [terminated, setTerminated] = useState(false);
@@ -532,19 +534,19 @@ function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: a
   const [facesDetected, setFacesDetected] = useState(1);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream|null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const tabViolRef = useRef(0);
   const faceViolRef = useRef(0);
   const terminatedRef = useRef(false);
   const faceCheckInterval = useRef<any>(null);
   const timerInterval = useRef<any>(null);
 
-  const addLog = useCallback((msg:string, type:"ok"|"warn"|"fail") => {
+  const addLog = useCallback((msg: string, type: "ok" | "warn" | "fail") => {
     const t = new Date().toLocaleTimeString();
-    setLogs(prev => [...prev.slice(-50), {t, msg, type}]);
+    setLogs(prev => [...prev.slice(-50), { t, msg, type }]);
   }, []);
 
-  const terminate = useCallback((reason:string) => {
+  const terminate = useCallback((reason: string) => {
     if (terminatedRef.current) return;
     terminatedRef.current = true;
     setTerminated(true);
@@ -627,7 +629,7 @@ function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: a
     let mounted = true;
     const startCam = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width:320, height:240, facingMode:"user" } });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: "user" } });
         if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) {
@@ -679,7 +681,7 @@ function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: a
       const regionW = W / 4;
 
       for (let idx = 0; idx < imgData.length; idx += 4) {
-        const r = imgData[idx], g = imgData[idx+1], b = imgData[idx+2];
+        const r = imgData[idx], g = imgData[idx + 1], b = imgData[idx + 2];
         const pixelNum = (idx / 4);
         const px = pixelNum % W;
         const region = Math.min(3, Math.floor(px / regionW));
@@ -689,14 +691,14 @@ function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: a
         const isSkin = (
           // Fair/medium skin
           (r > 95 && g > 40 && b > 20 &&
-           r > g && r > b &&
-           Math.abs(r - g) > 15 &&
-           r - Math.min(g, b) > 15 &&
-           r < 250) ||
+            r > g && r > b &&
+            Math.abs(r - g) > 15 &&
+            r - Math.min(g, b) > 15 &&
+            r < 250) ||
           // Darker skin tones (higher saturation difference)
           (r > 60 && g > 30 && b > 15 &&
-           r > g * 1.15 && r > b * 1.2 &&
-           r - b > 20)
+            r > g * 1.15 && r > b * 1.2 &&
+            r - b > 20)
         );
 
         if (isSkin) {
@@ -803,152 +805,152 @@ function ProctoredQuizModal({ quiz, onClose }: { quiz: any; onClose: (results: a
     onClose({ correct, total: quiz.questions.length, answers, logs, terminated: false, timeUp: false });
   };
 
-  const mins = Math.floor(timeLeft/60).toString().padStart(2,"0");
-  const secs = (timeLeft%60).toString().padStart(2,"0");
+  const mins = Math.floor(timeLeft / 60).toString().padStart(2, "0");
+  const secs = (timeLeft % 60).toString().padStart(2, "0");
   const timerColor = timeLeft < 300 ? "var(--accent2)" : timeLeft < 600 ? "var(--gold)" : "var(--accent3)";
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",backdropFilter:"blur(16px)",zIndex:1000,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(16px)", zIndex: 1000, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Top bar */}
-      <div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"12px 28px",display:"flex",alignItems:"center",gap:20,flexShrink:0}}>
-        <div style={{flex:1}}>
-          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase" as const,color:"var(--muted)",marginBottom:2}}>Proctored Exam</div>
-          <div style={{fontSize:15,fontWeight:600,color:"var(--text)"}}>{quiz.title}</div>
+      <div style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)", padding: "12px 28px", display: "flex", alignItems: "center", gap: 20, flexShrink: 0 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: 2 }}>Proctored Exam</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text)" }}>{quiz.title}</div>
         </div>
         {/* Violations */}
-        <div style={{display:"flex",gap:10}}>
-          <div style={{textAlign:"center",padding:"6px 14px",background:"rgba(255,204,92,0.08)",border:"1px solid rgba(255,204,92,0.2)",borderRadius:8}}>
-            <div style={{fontSize:18,fontWeight:700,fontFamily:"var(--font-serif)",color:"var(--gold)"}}>{tabViolations}</div>
-            <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>TAB VIOLATIONS</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ textAlign: "center", padding: "6px 14px", background: "rgba(255,204,92,0.08)", border: "1px solid rgba(255,204,92,0.2)", borderRadius: 8 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-serif)", color: "var(--gold)" }}>{tabViolations}</div>
+            <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>TAB VIOLATIONS</div>
           </div>
-          <div style={{textAlign:"center",padding:"6px 14px",background:"rgba(255,95,160,0.08)",border:"1px solid rgba(255,95,160,0.2)",borderRadius:8}}>
-            <div style={{fontSize:18,fontWeight:700,fontFamily:"var(--font-serif)",color:"var(--accent2)"}}>{faceViolations}</div>
-            <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>FACE ALERTS</div>
+          <div style={{ textAlign: "center", padding: "6px 14px", background: "rgba(255,95,160,0.08)", border: "1px solid rgba(255,95,160,0.2)", borderRadius: 8 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-serif)", color: "var(--accent2)" }}>{faceViolations}</div>
+            <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>FACE ALERTS</div>
           </div>
         </div>
         {/* Timer */}
-        <div style={{textAlign:"center",padding:"8px 20px",background:timeLeft<300?"rgba(255,95,160,0.08)":"rgba(0,219,160,0.06)",border:`1px solid ${timeLeft<300?"rgba(255,95,160,0.25)":"rgba(0,219,160,0.2)"}`,borderRadius:10}}>
-          <div style={{fontSize:26,fontWeight:700,fontFamily:"var(--font-mono)",color:timerColor,letterSpacing:2}}>{mins}:{secs}</div>
-          <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>REMAINING</div>
+        <div style={{ textAlign: "center", padding: "8px 20px", background: timeLeft < 300 ? "rgba(255,95,160,0.08)" : "rgba(0,219,160,0.06)", border: `1px solid ${timeLeft < 300 ? "rgba(255,95,160,0.25)" : "rgba(0,219,160,0.2)"}`, borderRadius: 10 }}>
+          <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "var(--font-mono)", color: timerColor, letterSpacing: 2 }}>{mins}:{secs}</div>
+          <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>REMAINING</div>
         </div>
         {/* Face status */}
-        <div style={{display:"flex",flexDirection:"column" as const,alignItems:"center",gap:4}}>
-          <div style={{width:10,height:10,borderRadius:"50%",background:faceStatus==="ok"?"var(--accent3)":faceStatus==="warn"?"var(--gold)":"var(--accent2)",boxShadow:faceStatus==="ok"?"0 0 8px var(--accent3)":faceStatus==="fail"?"0 0 8px var(--accent2)":"none",animation:faceStatus!=="ok"?"procDot 1s infinite":"none"}}/>
-          <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:0.5}}>{faceStatus==="ok"?"FACE OK":faceStatus==="warn"?"MULTIPLE?":"NO FACE"}</div>
+        <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 4 }}>
+          <div style={{ width: 10, height: 10, borderRadius: "50%", background: faceStatus === "ok" ? "var(--accent3)" : faceStatus === "warn" ? "var(--gold)" : "var(--accent2)", boxShadow: faceStatus === "ok" ? "0 0 8px var(--accent3)" : faceStatus === "fail" ? "0 0 8px var(--accent2)" : "none", animation: faceStatus !== "ok" ? "procDot 1s infinite" : "none" }} />
+          <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>{faceStatus === "ok" ? "FACE OK" : faceStatus === "warn" ? "MULTIPLE?" : "NO FACE"}</div>
         </div>
       </div>
 
       {terminated ? (
-        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column" as const,gap:20}}>
-          <div style={{fontSize:64}}>🚫</div>
-          <div style={{fontFamily:"var(--font-serif)",fontSize:28,color:"var(--accent2)",fontWeight:400}}>Test Terminated</div>
-          <div style={{fontSize:14,color:"var(--muted)",maxWidth:420,textAlign:"center",lineHeight:1.7}}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 20 }}>
+          <div style={{ fontSize: 64 }}>🚫</div>
+          <div style={{ fontFamily: "var(--font-serif)", fontSize: 28, color: "var(--accent2)", fontWeight: 400 }}>Test Terminated</div>
+          <div style={{ fontSize: 14, color: "var(--muted)", maxWidth: 420, textAlign: "center", lineHeight: 1.7 }}>
             This test has been automatically terminated due to proctoring violations. The teacher has been notified with full violation logs.
           </div>
-          <button onClick={()=>onClose({ correct:0, total:quiz.questions.length, answers:{}, logs, terminated:true, timeUp:false })} className="btn-danger" style={{marginTop:10}}>Close & Report to Teacher</button>
+          <button onClick={() => onClose({ correct: 0, total: quiz.questions.length, answers: {}, logs, terminated: true, timeUp: false })} className="btn-danger" style={{ marginTop: 10 }}>Close & Report to Teacher</button>
         </div>
       ) : submitted ? (
-        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column" as const,gap:16}}>
-          <div style={{fontSize:64}}>✅</div>
-          <div style={{fontFamily:"var(--font-serif)",fontSize:28,color:"var(--accent3)",fontWeight:400}}>Submitted!</div>
-          <div style={{fontSize:14,color:"var(--muted)"}}>{Object.keys(answers).length} of {quiz.questions.length} questions answered</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 16 }}>
+          <div style={{ fontSize: 64 }}>✅</div>
+          <div style={{ fontFamily: "var(--font-serif)", fontSize: 28, color: "var(--accent3)", fontWeight: 400 }}>Submitted!</div>
+          <div style={{ fontSize: 14, color: "var(--muted)" }}>{Object.keys(answers).length} of {quiz.questions.length} questions answered</div>
         </div>
       ) : (
-        <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 300px",overflow:"hidden"}}>
+        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 300px", overflow: "hidden" }}>
           {/* Questions */}
-          <div style={{padding:"24px 32px",overflowY:"auto"}}>
-            {quiz.questions.map((q:any, qi:number) => (
-              <div key={qi} className="q-card" style={{borderColor:answers[qi]!==undefined?"rgba(124,111,255,0.25)":undefined}}>
-                <div style={{display:"flex",gap:14,marginBottom:14}}>
-                  <div className="q-card-num">{qi+1}</div>
-                  <div style={{fontSize:14,fontWeight:500,color:"var(--text)",lineHeight:1.6,flex:1}}>{q.text}</div>
-                  <div style={{fontSize:11,color:"var(--muted)",fontWeight:500,whiteSpace:"nowrap" as const}}>{q.marks} mark{q.marks>1?"s":""}</div>
+          <div style={{ padding: "24px 32px", overflowY: "auto" }}>
+            {quiz.questions.map((q: any, qi: number) => (
+              <div key={qi} className="q-card" style={{ borderColor: answers[qi] !== undefined ? "rgba(124,111,255,0.25)" : undefined }}>
+                <div style={{ display: "flex", gap: 14, marginBottom: 14 }}>
+                  <div className="q-card-num">{qi + 1}</div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text)", lineHeight: 1.6, flex: 1 }}>{q.text}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 500, whiteSpace: "nowrap" as const }}>{q.marks} mark{q.marks > 1 ? "s" : ""}</div>
                 </div>
-                <div style={{paddingLeft:34}}>
-                  {q.options.map((opt:string, oi:number) => (
-                    <div key={oi} className="q-option-row" onClick={()=>setAnswers({...answers,[qi]:oi})} style={{cursor:"pointer",padding:"9px 12px",borderRadius:8,background:answers[qi]===oi?"rgba(124,111,255,0.09)":"transparent",border:answers[qi]===oi?"1px solid rgba(124,111,255,0.22)":"1px solid transparent",transition:"all 0.15s"}}>
-                      <div style={{width:18,height:18,borderRadius:"50%",border:`2px solid ${answers[qi]===oi?"var(--accent)":"var(--muted)"}`,background:answers[qi]===oi?"rgba(124,111,255,0.2)":"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s"}}>
-                        {answers[qi]===oi && <div style={{width:8,height:8,borderRadius:"50%",background:"var(--accent)"}}/>}
+                <div style={{ paddingLeft: 34 }}>
+                  {q.options.map((opt: string, oi: number) => (
+                    <div key={oi} className="q-option-row" onClick={() => setAnswers({ ...answers, [qi]: oi })} style={{ cursor: "pointer", padding: "9px 12px", borderRadius: 8, background: answers[qi] === oi ? "rgba(124,111,255,0.09)" : "transparent", border: answers[qi] === oi ? "1px solid rgba(124,111,255,0.22)" : "1px solid transparent", transition: "all 0.15s" }}>
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${answers[qi] === oi ? "var(--accent)" : "var(--muted)"}`, background: answers[qi] === oi ? "rgba(124,111,255,0.2)" : "transparent", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}>
+                        {answers[qi] === oi && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)" }} />}
                       </div>
-                      <span style={{fontSize:13,color:answers[qi]===oi?"var(--text)":"var(--text2)",fontWeight:answers[qi]===oi?500:300}}>{opt}</span>
+                      <span style={{ fontSize: 13, color: answers[qi] === oi ? "var(--text)" : "var(--text2)", fontWeight: answers[qi] === oi ? 500 : 300 }}>{opt}</span>
                     </div>
                   ))}
                 </div>
               </div>
             ))}
-            <div style={{padding:"20px 0",display:"flex",justifyContent:"flex-end",gap:12}}>
-              <div style={{fontSize:12,color:"var(--muted)",alignSelf:"center"}}>
+            <div style={{ padding: "20px 0", display: "flex", justifyContent: "flex-end", gap: 12 }}>
+              <div style={{ fontSize: 12, color: "var(--muted)", alignSelf: "center" }}>
                 {Object.keys(answers).length}/{quiz.questions.length} answered
               </div>
-              <button onClick={handleSubmit} className="btn-success" style={{padding:"12px 32px",fontSize:14}}>
+              <button onClick={handleSubmit} className="btn-success" style={{ padding: "12px 32px", fontSize: 14 }}>
                 Submit Test →
               </button>
             </div>
           </div>
 
           {/* Proctor panel */}
-          <div style={{background:"var(--surface2)",borderLeft:"1px solid var(--border)",padding:"20px",overflowY:"auto",display:"flex",flexDirection:"column" as const,gap:12}}>
-            <div style={{fontSize:9,fontWeight:700,letterSpacing:2,textTransform:"uppercase" as const,color:"var(--muted)"}}>Proctor Monitor</div>
+          <div style={{ background: "var(--surface2)", borderLeft: "1px solid var(--border)", padding: "20px", overflowY: "auto", display: "flex", flexDirection: "column" as const, gap: 12 }}>
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" as const, color: "var(--muted)" }}>Proctor Monitor</div>
             {/* Camera */}
-            <div className="cam-preview" style={{aspectRatio:"4/3"}}>
-              <video ref={videoRef} style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}} muted playsInline/>
-              <canvas ref={canvasRef} style={{display:"none"}}/>
+            <div className="cam-preview" style={{ aspectRatio: "4/3" }}>
+              <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} muted playsInline />
+              <canvas ref={canvasRef} style={{ display: "none" }} />
               {camError && <div className="cam-overlay">{camError}</div>}
               {/* Face indicator */}
-              <div style={{position:"absolute",bottom:8,left:8,right:8,display:"flex",alignItems:"center",gap:6,background:"rgba(0,0,0,0.75)",borderRadius:6,padding:"5px 10px",backdropFilter:"blur(4px)"}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:faceStatus==="ok"?"var(--accent3)":faceStatus==="warn"?"var(--gold)":"var(--accent2)",flexShrink:0,boxShadow:faceStatus!=="ok"?`0 0 6px ${faceStatus==="warn"?"var(--gold)":"var(--accent2)"}`:undefined,animation:faceStatus!=="ok"?"procDot 1s infinite":undefined}}/>
-                <span style={{fontSize:11,color:"#fff",fontWeight:500,flex:1}}>
-                  {faceStatus==="ok"
+              <div style={{ position: "absolute", bottom: 8, left: 8, right: 8, display: "flex", alignItems: "center", gap: 6, background: "rgba(0,0,0,0.75)", borderRadius: 6, padding: "5px 10px", backdropFilter: "blur(4px)" }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: faceStatus === "ok" ? "var(--accent3)" : faceStatus === "warn" ? "var(--gold)" : "var(--accent2)", flexShrink: 0, boxShadow: faceStatus !== "ok" ? `0 0 6px ${faceStatus === "warn" ? "var(--gold)" : "var(--accent2)"}` : undefined, animation: faceStatus !== "ok" ? "procDot 1s infinite" : undefined }} />
+                <span style={{ fontSize: 11, color: "#fff", fontWeight: 500, flex: 1 }}>
+                  {faceStatus === "ok"
                     ? "✓ Face detected — All clear"
-                    : faceStatus==="warn"
-                    ? (facesDetected > 1 ? `⚠ ${facesDetected} people in frame!` : "⚠ Screen/device in frame!")
-                    : "❌ Face not visible!"}
+                    : faceStatus === "warn"
+                      ? (facesDetected > 1 ? `⚠ ${facesDetected} people in frame!` : "⚠ Screen/device in frame!")
+                      : "❌ Face not visible!"}
                 </span>
-                {faceStatus!=="ok" && (
-                  <span style={{fontSize:9,fontWeight:700,color:"var(--accent2)",background:"rgba(255,95,160,0.2)",borderRadius:4,padding:"2px 6px",flexShrink:0}}>VIOLATION</span>
+                {faceStatus !== "ok" && (
+                  <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent2)", background: "rgba(255,95,160,0.2)", borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>VIOLATION</span>
                 )}
               </div>
             </div>
 
             {/* Status pills */}
-            <div className={`proctor-status ${faceStatus==="ok"?"proctor-ok":faceStatus==="warn"?"proctor-warn":"proctor-fail"}`}>
-              <div className={`proctor-dot ${faceStatus!=="ok"?"pulse":""}`}/>
-              {faceStatus==="ok"
+            <div className={`proctor-status ${faceStatus === "ok" ? "proctor-ok" : faceStatus === "warn" ? "proctor-warn" : "proctor-fail"}`}>
+              <div className={`proctor-dot ${faceStatus !== "ok" ? "pulse" : ""}`} />
+              {faceStatus === "ok"
                 ? "✓ All clear — proctoring active"
-                : faceStatus==="warn"
-                ? (facesDetected > 1 ? `⚠ Multiple people detected (${facesDetected} faces)!` : "⚠ Electronic device detected in frame!")
-                : "❌ Face not visible — look at camera"}
+                : faceStatus === "warn"
+                  ? (facesDetected > 1 ? `⚠ Multiple people detected (${facesDetected} faces)!` : "⚠ Electronic device detected in frame!")
+                  : "❌ Face not visible — look at camera"}
             </div>
 
             {/* Rules reminder */}
-            <div style={{background:"rgba(255,204,92,0.05)",border:"1px solid rgba(255,204,92,0.15)",borderRadius:8,padding:"12px 14px"}}>
-              <div style={{fontSize:9.5,fontWeight:700,color:"var(--gold)",letterSpacing:1.5,marginBottom:7}}>RULES</div>
-              <div style={{fontSize:11.5,color:"var(--text2)",lineHeight:1.8,fontWeight:300}}>
-                • Stay on this tab at all times<br/>
-                • Keep your face visible in camera<br/>
-                • No other people in frame<br/>
-                • 3 tab switches = auto terminate<br/>
+            <div style={{ background: "rgba(255,204,92,0.05)", border: "1px solid rgba(255,204,92,0.15)", borderRadius: 8, padding: "12px 14px" }}>
+              <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--gold)", letterSpacing: 1.5, marginBottom: 7 }}>RULES</div>
+              <div style={{ fontSize: 11.5, color: "var(--text2)", lineHeight: 1.8, fontWeight: 300 }}>
+                • Stay on this tab at all times<br />
+                • Keep your face visible in camera<br />
+                • No other people in frame<br />
+                • 3 tab switches = auto terminate<br />
                 • 5 face absences = auto terminate
               </div>
             </div>
 
             {/* Progress */}
             <div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--muted)",marginBottom:6}}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
                 <span>Progress</span>
                 <span>{Object.keys(answers).length}/{quiz.questions.length}</span>
               </div>
-              <div style={{height:5,background:"rgba(255,255,255,0.05)",borderRadius:4,overflow:"hidden"}}>
-                <div style={{height:"100%",width:`${(Object.keys(answers).length/quiz.questions.length)*100}%`,background:"var(--accent)",borderRadius:4,transition:"width 0.3s"}}/>
+              <div style={{ height: 5, background: "rgba(255,255,255,0.05)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${(Object.keys(answers).length / quiz.questions.length) * 100}%`, background: "var(--accent)", borderRadius: 4, transition: "width 0.3s" }} />
               </div>
             </div>
 
             {/* Log */}
             <div>
-              <div style={{fontSize:9.5,fontWeight:700,color:"var(--muted)",letterSpacing:1.5,marginBottom:6}}>ACTIVITY LOG</div>
+              <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--muted)", letterSpacing: 1.5, marginBottom: 6 }}>ACTIVITY LOG</div>
               <div className="proctor-log">
-                {logs.length===0 && <span style={{color:"var(--muted)"}}>Monitoring started…</span>}
-                {logs.map((l,i)=>(
+                {logs.length === 0 && <span style={{ color: "var(--muted)" }}>Monitoring started…</span>}
+                {logs.map((l, i) => (
                   <div key={i} className={`log-${l.type}`}>[{l.t}] {l.msg}</div>
                 ))}
               </div>
@@ -976,7 +978,7 @@ export default function Page() {
   const [coTeacherLoading, setCoTeacherLoading] = useState(false);
 
   // OCR Benchmark — enhanced for multi-page PDF
-  const [ocrBenchFile, setOcrBenchFile] = useState<File|null>(null);
+  const [ocrBenchFile, setOcrBenchFile] = useState<File | null>(null);
   const [ocrBenchLoading, setOcrBenchLoading] = useState(false);
   const [ocrBenchResults, setOcrBenchResults] = useState<any>(null);
   const [ocrBenchSelected, setOcrBenchSelected] = useState("groq");
@@ -1002,37 +1004,38 @@ export default function Page() {
   const [aiReport, setAiReport] = useState(""); const [weakReport, setWeakReport] = useState("");
 
   // Attendance
-  const [attendance, setAttendance] = useState<Record<string,string>>({});
-  const [attendanceSummary, setAttendanceSummary] = useState<Record<string,{present:number;absent:number}>>({});
-  const [attDate, setAttDate] = useState(() => new Date().toISOString().slice(0,10));
+  const [attendance, setAttendance] = useState<Record<string, string>>({});
+  const [attendanceSummary, setAttendanceSummary] = useState<Record<string, { present: number; absent: number }>>({});
+  const [attDate, setAttDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Lesson
   const [lessonTopic, setLessonTopic] = useState(""); const [lessonContext, setLessonContext] = useState("");
   const [lessonGrade, setLessonGrade] = useState("Grade 10"); const [lessonDuration, setLessonDuration] = useState("45 minutes");
-  const [lessonSections, setLessonSections] = useState<{title:string;body:string;icon:string}[]>([]);
+  const [lessonSections, setLessonSections] = useState<{ title: string; body: string; icon: string }[]>([]);
   const [lessonOutput, setLessonOutput] = useState("");
 
   // Study Tool
   const [studyTopic, setStudyTopic] = useState("");
   const [studyData, setStudyData] = useState<any>(null);
-  const [studyImages, setStudyImages] = useState<{src:string;caption:string}[]>([]);
+  const [studyImages, setStudyImages] = useState<{ src: string; caption: string }[]>([]);
   const [studyLoading, setStudyLoading] = useState(false);
 
   // Paper Eval
   const [evalStep, setEvalStep] = useState<EvalStep>("idle");
   const [evalProgress, setEvalProgress] = useState("");
-  const [answerSheetFile, setAnswerSheetFile] = useState<File|null>(null);
-  const [questionPaperFile, setQuestionPaperFile] = useState<File|null>(null);
-  const [syllabusFile, setSyllabusFile] = useState<File|null>(null);
-  const [modelAnswersFile, setModelAnswersFile] = useState<File|null>(null);
+  const [answerSheetFile, setAnswerSheetFile] = useState<File | null>(null);
+  const [questionPaperFile, setQuestionPaperFile] = useState<File | null>(null);
+  const [syllabusFile, setSyllabusFile] = useState<File | null>(null);
+  const [modelAnswersFile, setModelAnswersFile] = useState<File | null>(null);
   const [selectedStudent, setSelectedStudent] = useState("");
   const [paperTitle, setPaperTitle] = useState(""); const [subject, setSubject] = useState("");
   const [totalMarksInput, setTotalMarksInput] = useState(""); const [marksDistribution, setMarksDistribution] = useState("");
   const [evaluation, setEvaluation] = useState<any>(null);
-  const [evalMode, setEvalMode] = useState<""|"Mode 1"|"Mode 2"|"Mode 3">("");
+  const [evalMode, setEvalMode] = useState<"" | "Mode 1" | "Mode 2" | "Mode 3">("");
   const [evalFromOcr, setEvalFromOcr] = useState(""); // pre-filled from OCR page
-  const [evalPhase, setEvalPhase] = useState<"scan"|"action"|"evaluate"|"progress"|"done">("scan");
-  
+  const [evalPhase, setEvalPhase] = useState<"scan" | "action" | "evaluate" | "progress" | "done">("scan");
+  const [strictnessLevel, setStrictnessLevel] = useState(3); // 1=Very Lenient … 5=Very Strict
+
   // Pro Evaluator Mode
   const [proMode, setProMode] = useState(false);
   const [proReportUrl, setProReportUrl] = useState("");
@@ -1043,7 +1046,7 @@ export default function Page() {
   const [annType, setAnnType] = useState("info"); const [annTarget, setAnnTarget] = useState("all");
 
   // ─── QUIZ STATE ───
-  const [quizView, setQuizView] = useState<"list"|"create"|"ai-gen"|"session"|"results">("list");
+  const [quizView, setQuizView] = useState<"list" | "create" | "ai-gen" | "session" | "results">("list");
   const [quizzes, setQuizzes] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [activeQuiz, setActiveQuiz] = useState<any>(null);
@@ -1072,20 +1075,20 @@ export default function Page() {
 
   // ── DATA FETCH ──
   const fetchStudents = async () => {
-    const { data:u } = await supabase.auth.getUser();
+    const { data: u } = await supabase.auth.getUser();
     if (!u.user) return;
-    const { data, error } = await supabase.from("students").select("*").eq("user_id", u.user.id).order("id", {ascending:true});
+    const { data, error } = await supabase.from("students").select("*").eq("user_id", u.user.id).order("id", { ascending: true });
     if (!error && data) setStudents(data);
   };
 
   const fetchAttendanceSummary = useCallback(async () => {
     if (!students.length) return;
     const ids = students.map(s => s.id);
-    const { data, error } = await supabase.from("attendance").select("student_id,status,date").in("student_id", ids).order("date", {ascending:false});
+    const { data, error } = await supabase.from("attendance").select("student_id,status,date").in("student_id", ids).order("date", { ascending: false });
     if (error || !data) return;
-    const summary: Record<string,{present:number;absent:number}> = {};
-    ids.forEach(id => { summary[String(id)] = {present:0, absent:0}; });
-    data.forEach((row:any) => {
+    const summary: Record<string, { present: number; absent: number }> = {};
+    ids.forEach(id => { summary[String(id)] = { present: 0, absent: 0 }; });
+    data.forEach((row: any) => {
       const k = String(row.student_id);
       if (!summary[k]) return;
       if (row.status === "Present") summary[k].present++;
@@ -1095,9 +1098,9 @@ export default function Page() {
   }, [students]);
 
   const fetchAnnouncements = async () => {
-    const { data:u } = await supabase.auth.getUser();
+    const { data: u } = await supabase.auth.getUser();
     if (!u.user) return;
-    const { data } = await supabase.from("announcements").select("*").eq("user_id", u.user.id).order("created_at", {ascending:false});
+    const { data } = await supabase.from("announcements").select("*").eq("user_id", u.user.id).order("created_at", { ascending: false });
     if (data) setAnnouncements(data);
   };
 
@@ -1108,27 +1111,27 @@ export default function Page() {
       if (stored) setQuizzes(JSON.parse(stored));
       const storedSessions = localStorage.getItem("edu_sessions");
       if (storedSessions) setSessions(JSON.parse(storedSessions));
-    } catch {}
+    } catch { }
   }, []);
 
   const saveQuizzes = (updated: any[]) => {
     setQuizzes(updated);
-    try { localStorage.setItem("edu_quizzes", JSON.stringify(updated)); } catch {}
+    try { localStorage.setItem("edu_quizzes", JSON.stringify(updated)); } catch { }
   };
 
   const saveSessions = (updated: any[]) => {
     setSessions(updated);
-    try { localStorage.setItem("edu_sessions", JSON.stringify(updated)); } catch {}
+    try { localStorage.setItem("edu_sessions", JSON.stringify(updated)); } catch { }
   };
 
   useEffect(() => {
-    setDate(new Date().toLocaleDateString("en-IN", {day:"numeric",month:"long",year:"numeric"}));
+    setDate(new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }));
     checkUser();
     fetchStudents();
     loadQuizzes();
   }, []);
   useEffect(() => { fetchAttendanceSummary(); }, [fetchAttendanceSummary]);
-  useEffect(() => { if (page==="announcements") fetchAnnouncements(); }, [page]);
+  useEffect(() => { if (page === "announcements") fetchAnnouncements(); }, [page]);
 
   // ── STUDENTS CRUD ──
   const addStudent = async () => {
@@ -1137,9 +1140,9 @@ export default function Page() {
     if (isNaN(numAvg) || numAvg < 0 || numAvg > 100) return alert("Average must be 0–100");
     setLoading(true);
     try {
-      const { data:u } = await supabase.auth.getUser();
+      const { data: u } = await supabase.auth.getUser();
       const { data, error } = await supabase.from("students")
-        .insert([{ name:name.trim(), grade, avg:numAvg, user_id:u.user?.id }]).select();
+        .insert([{ name: name.trim(), grade, avg: numAvg, user_id: u.user?.id }]).select();
       if (error) throw error;
       if (data) setStudents(prev => [...prev, ...data]);
       setName(""); setGrade(""); setAvg("");
@@ -1209,7 +1212,7 @@ Write:
     }));
     const { error } = await supabase.from("attendance").insert(records);
     if (error) return alert("Failed to save: " + error.message);
-    alert("Attendance saved for " + new Date(attDate).toLocaleDateString("en-IN",{day:"numeric",month:"long",year:"numeric"}));
+    alert("Attendance saved for " + new Date(attDate).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }));
     setAttendance({});
     fetchAttendanceSummary();
   };
@@ -1237,17 +1240,17 @@ One meaningful homework task.
 ##TEACHER_TIPS##
 2-3 pro tips: common misconceptions, differentiation ideas, engagement tricks.`;
     const raw = await generateAILesson(prompt);
-    const ps = (text:string, tag:string) => { const m = text.split(`##${tag}##`)[1]; if(!m) return ""; return (m.split(/##[A-Z_]+##/)[0]||"").trim(); };
+    const ps = (text: string, tag: string) => { const m = text.split(`##${tag}##`)[1]; if (!m) return ""; return (m.split(/##[A-Z_]+##/)[0] || "").trim(); };
     const defs = [
-      {tag:"OBJECTIVE",title:"Learning Objectives",icon:"🎯"},
-      {tag:"HOOK",title:"Opening Hook",icon:"⚡"},
-      {tag:"MAIN_CONTENT",title:"Lesson Content",icon:"📖"},
-      {tag:"ACTIVITY",title:"Student Activity",icon:"🔬"},
-      {tag:"ASSESSMENT",title:"Assessment Questions",icon:"✅"},
-      {tag:"HOMEWORK",title:"Homework Task",icon:"🏠"},
-      {tag:"TEACHER_TIPS",title:"Teacher Tips",icon:"💡"},
+      { tag: "OBJECTIVE", title: "Learning Objectives", icon: "🎯" },
+      { tag: "HOOK", title: "Opening Hook", icon: "⚡" },
+      { tag: "MAIN_CONTENT", title: "Lesson Content", icon: "📖" },
+      { tag: "ACTIVITY", title: "Student Activity", icon: "🔬" },
+      { tag: "ASSESSMENT", title: "Assessment Questions", icon: "✅" },
+      { tag: "HOMEWORK", title: "Homework Task", icon: "🏠" },
+      { tag: "TEACHER_TIPS", title: "Teacher Tips", icon: "💡" },
     ];
-    const parsed = defs.map(s => ({...s, body:ps(raw,s.tag)})).filter(s => s.body);
+    const parsed = defs.map(s => ({ ...s, body: ps(raw, s.tag) })).filter(s => s.body);
     if (parsed.length > 0) setLessonSections(parsed); else setLessonOutput(raw);
     setLoading(false);
   };
@@ -1310,45 +1313,45 @@ END_SECTION`;
         return text.slice(contentStart, end).trim();
       };
       const funFactsRaw = extractSection(raw, "FUN_FACTS");
-      const funFacts = funFactsRaw.split("\n").filter((l:string) => l.trim().startsWith("★")).map((l:string) => l.replace(/^★\s*/, "").trim()).filter(Boolean);
-      setStudyData({ definition:extractSection(raw,"DEFINITION"), explanation:extractSection(raw,"EXPLANATION"), keyConcepts:extractSection(raw,"KEY_CONCEPTS"), types:extractSection(raw,"TYPES"), applications:extractSection(raw,"APPLICATIONS"), history:extractSection(raw,"HISTORY"), misconceptions:extractSection(raw,"MISCONCEPTIONS"), examTips:extractSection(raw,"EXAM_TIPS"), funFacts, rawText:raw });
+      const funFacts = funFactsRaw.split("\n").filter((l: string) => l.trim().startsWith("★")).map((l: string) => l.replace(/^★\s*/, "").trim()).filter(Boolean);
+      setStudyData({ definition: extractSection(raw, "DEFINITION"), explanation: extractSection(raw, "EXPLANATION"), keyConcepts: extractSection(raw, "KEY_CONCEPTS"), types: extractSection(raw, "TYPES"), applications: extractSection(raw, "APPLICATIONS"), history: extractSection(raw, "HISTORY"), misconceptions: extractSection(raw, "MISCONCEPTIONS"), examTips: extractSection(raw, "EXAM_TIPS"), funFacts, rawText: raw });
 
-      const imgs: {src:string;caption:string}[] = [];
+      const imgs: { src: string; caption: string }[] = [];
       try {
         const searchRes = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(studyTopic)}&srlimit=5&format=json&origin=*`);
         const searchData = await searchRes.json();
-        for (const result of (searchData?.query?.search||[]).slice(0,5)) {
+        for (const result of (searchData?.query?.search || []).slice(0, 5)) {
           if (imgs.length >= 3) break;
           try {
             const summaryRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(result.title)}`);
             const summaryData = await summaryRes.json();
             const src = summaryData?.thumbnail?.source || summaryData?.originalimage?.source;
-            if (src && !imgs.some(i => i.src === src)) imgs.push({src, caption:`${result.title}${summaryData.description?` — ${summaryData.description}`:""}`});
-          } catch {}
+            if (src && !imgs.some(i => i.src === src)) imgs.push({ src, caption: `${result.title}${summaryData.description ? ` — ${summaryData.description}` : ""}` });
+          } catch { }
         }
-      } catch {}
-      setStudyImages(imgs.slice(0,3));
-    } catch (e:any) { alert("Study generation failed: " + (e.message||"Try again")); }
+      } catch { }
+      setStudyImages(imgs.slice(0, 3));
+    } catch (e: any) { alert("Study generation failed: " + (e.message || "Try again")); }
     setStudyLoading(false);
   };
 
   // ── PAPER EVAL ──
-  const fileToBase64 = (file:File): Promise<string> => new Promise((res,rej) => {
+  const fileToBase64 = (file: File): Promise<string> => new Promise((res, rej) => {
     const r = new FileReader(); r.readAsDataURL(file);
     r.onload = () => res((r.result as string).split(",")[1]); r.onerror = rej;
   });
 
-  const readFileText = async (file:File): Promise<string> => {
+  const readFileText = async (file: File): Promise<string> => {
     const base64 = await fileToBase64(file);
     const isPdf = file.type === "application/pdf";
     if (isPdf) {
       // PDF → use fast Groq Vision multi-page backend instead of slow local trocr
-      const res = await fetch("/api/ocr", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({pdfBase64:base64, mimeType:file.type, model:"groq-vision"})});
+      const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdfBase64: base64, mimeType: file.type, model: "groq-vision" }) });
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || "PDF OCR failed"); }
       const d = await res.json(); return d.merged_text || d.text || "";
     } else {
       // Image → use Groq vision
-      const res = await fetch("/api/ocr", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({imageBase64:base64, mimeType:file.type||"image/jpeg"})});
+      const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: base64, mimeType: file.type || "image/jpeg" }) });
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || "OCR failed"); }
       const d = await res.json(); return d.text || "";
     }
@@ -1357,26 +1360,25 @@ END_SECTION`;
   // Keep old alias for compat
   const readImageText = readFileText;
 
-  const parseEvalJSON = (raw:string): any => {
-    const clean = raw.replace(/```json|```/g,"").trim();
+  const parseEvalJSON = (raw: string): any => {
+    const clean = raw.replace(/```json|```/g, "").trim();
     const match = clean.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON found");
     return JSON.parse(match[0]);
   };
 
-  const getLetterGrade = (pct:number) => pct>=90?"A+":pct>=80?"A":pct>=70?"B":pct>=60?"C":pct>=50?"D":"F";
+  const getLetterGrade = (pct: number) => pct >= 90 ? "A+" : pct >= 80 ? "A" : pct >= 70 ? "B" : pct >= 60 ? "C" : pct >= 50 ? "D" : "F";
 
   const evaluatePaper = async () => {
     // Student text can come from pre-filled OCR OR from uploaded file
     const hasPrefilledText = !!evalFromOcr.trim();
     if (!hasPrefilledText && !answerSheetFile) return alert("Upload the handwritten answer sheet (or use 'Send to Evaluator' from the OCR page)");
     if (proMode && !answerSheetFile) return alert("Pro Mode requires the original PDF/Image file to draw annotations.");
-    if (!totalMarksInput) return alert("Enter total marks");
-    if (!marksDistribution.trim() && !modelAnswersFile && !questionPaperFile) return alert("Please enter marks distribution, or upload a Question Paper / Marking Scheme.");
-    
+    if (!totalMarksInput) return alert("Enter total marks — e.g. 100");
+
     setEvaluation(null); setEvalStep("ocr"); setLoading(true); setEvalPhase("progress");
     setProReportUrl(""); // reset old report
-    
+
     try {
       let questionPaperText = "";
       if (questionPaperFile) { setEvalProgress("Reading question paper…"); questionPaperText = await readFileText(questionPaperFile); }
@@ -1398,11 +1400,11 @@ END_SECTION`;
         }
       }
 
-      setEvalStep("ai"); 
+      setEvalStep("ai");
       setEvalProgress(proMode ? "AI is running strict Autonomous Evaluation & generating Pro Report…" : "AI is evaluating and marking answers…");
 
       let evalRes: any;
-      
+
       if (proMode) {
         // Convert file to base64
         const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
@@ -1411,41 +1413,43 @@ END_SECTION`;
           reader.onload = () => resolve((reader.result as string).split(',')[1]);
           reader.onerror = error => reject(error);
         });
-        
+
         const pdfBase64 = await fileToBase64(answerSheetFile!);
-        
+
         evalRes = await fetch("/api/evaluate-pro", {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             pdfBase64: pdfBase64,
-            question_paper_text: questionPaperText || `Exam: ${paperTitle||"Exam"} | Subject: ${subject||"N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
+            question_paper_text: questionPaperText || `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
             model_answers_text: modelAnswersText || syllabusText,
             total_marks: parseInt(totalMarksInput) || 0,
-            target_model: "tesseract"
+            target_model: "tesseract",
+            strictness_level: strictnessLevel,
           }),
-        }).then(r=>r.json());
-        
+        }).then(r => r.json());
+
       } else {
         // Standard Evaluation
         evalRes = await fetch("/api/evaluate", {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             student_text: studentText,
-            question_paper_text: questionPaperText || `Exam: ${paperTitle||"Exam"} | Subject: ${subject||"N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
+            question_paper_text: questionPaperText || `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
             model_answers_text: modelAnswersText,
             syllabus_text: syllabusText,
             total_marks: parseInt(totalMarksInput) || 0,
-            class_level: students.find((s:any)=>String(s.id)===selectedStudent)?.grade || "",
+            class_level: students.find((s: any) => String(s.id) === selectedStudent)?.grade || "",
+            strictness_level: strictnessLevel,
           }),
-        }).then(r=>r.json());
+        }).then(r => r.json());
       }
 
       if (evalRes.status !== "success") throw new Error(evalRes.detail || evalRes.message || evalRes.error || "Evaluation failed");
 
       const ev = evalRes.evaluation;
-      
+
       // Save the Pro Report URL if available
       if (evalRes.pdf_url) {
         setProReportUrl(evalRes.pdf_url);
@@ -1459,29 +1463,34 @@ END_SECTION`;
         grade: ev.grade || getLetterGrade(ev.percentage),
         overallFeedback: ev.overall_feedback,
         teacherNote: proMode ? `Evaluated via Autonomous Pro Mode (University Rules)` : `Evaluated via ${evalRes.mode || "AI Engine"}`,
-        questions: (ev.questions || []).map((q:any) => ({
+        questions: (ev.questions || []).map((q: any) => ({
           qNo: q.question_no,
+          section: q.section || "",
           topic: "",
           questionText: q.question,
           awarded: q.marks_awarded,
           max: q.marks_total,
-          reasoning: proMode ? q.red_pen_comment : q.feedback,
+          isCounted: q.is_counted !== false, // false = extra/uncounted answer
+          status: q.status || (q.marks_awarded === q.marks_total ? "full" : q.marks_awarded === 0 ? "zero" : "partial"),
+          reasoning: q.feedback || q.red_pen_comment || "",
+          studentAnswerSummary: q.student_answer_summary || "",
           graceAwarded: false,
           graceReason: "",
-          improvement: q.status === "wrong" || q.status === "partial" ? (q.feedback || q.red_pen_comment) : "",
+          improvement: q.improvement || (q.status === "partial" ? (q.feedback || q.red_pen_comment) : ""),
           pageNo: q.page_no,
-          redPen: q.red_pen_comment,
+          redPen: q.red_pen_comment || "",
         })),
       };
-      
+
       setEvaluation(result);
       setEvalMode(evalRes.mode || "");
       setEvalStep("done");
       setEvalPhase("done");
-    } catch (err:any) {
+    } catch (err: any) {
       alert("Evaluation failed: " + (err.message || "Try again"));
       setEvalStep("idle");
-      setEvalPhase("evaluate");
+      // Go back to action phase if we came from OCR scan (evalFromOcr set), otherwise evaluate phase
+      setEvalPhase(evalFromOcr ? "action" : "evaluate");
     }
     setLoading(false);
   };
@@ -1489,35 +1498,35 @@ END_SECTION`;
 
   const downloadReportCard = () => {
     if (!evaluation) return;
-    
+
     // If Pro Mode PDF is available, download it directly
     if (proReportUrl) {
-       // Since the backend might be on 8080, we route through our Next API proxy or direct
-       // We'll assume the Next proxy is available or we fallback to 8080
-       const url = proReportUrl.startsWith("/") ? `http://127.0.0.1:8080${proReportUrl}` : proReportUrl;
-       const a = document.createElement("a");
-       a.href = url;
-       a.target = "_blank";
-       a.download = "ShikshakAI_Pro_Report.pdf";
-       document.body.appendChild(a);
-       a.click();
-       document.body.removeChild(a);
-       return;
+      // Since the backend might be on 8080, we route through our Next API proxy or direct
+      // We'll assume the Next proxy is available or we fallback to 8080
+      const url = proReportUrl.startsWith("/") ? `http://127.0.0.1:8080${proReportUrl}` : proReportUrl;
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.download = "ShikshakAI_Pro_Report.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
     }
-    
-    const sn = selectedStudent ? students.find((s:any)=>String(s.id)===selectedStudent)?.name||"Student" : "Student";
-    const gc = evaluation.percentage>=75?"#00dba0":evaluation.percentage>=50?"#ffcc5c":"#ff5fa0";
-    const now = new Date().toLocaleDateString("en-IN",{day:"numeric",month:"long",year:"numeric"});
-    const rowsHtml = evaluation.questions.map((q:any)=>{
-      const c=q.awarded===q.max?"full":q.awarded===0?"zero":"partial";
+
+    const sn = selectedStudent ? students.find((s: any) => String(s.id) === selectedStudent)?.name || "Student" : "Student";
+    const gc = evaluation.percentage >= 75 ? "#00dba0" : evaluation.percentage >= 50 ? "#ffcc5c" : "#ff5fa0";
+    const now = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    const rowsHtml = evaluation.questions.map((q: any) => {
+      const c = q.awarded === q.max ? "full" : q.awarded === 0 ? "zero" : "partial";
       return `<tr>
-        <td><strong>${q.qNo||""}</strong></td>
-        <td style="color:#888;font-size:11px">${q.topic||"—"}</td>
-        <td style="font-size:11px;max-width:160px">${q.questionText||"—"}</td>
+        <td><strong>${q.qNo || ""}</strong></td>
+        <td style="color:#888;font-size:11px">${q.topic || "—"}</td>
+        <td style="font-size:11px;max-width:160px">${q.questionText || "—"}</td>
         <td class="${c}">${q.awarded}/${q.max}</td>
-        <td style="text-align:center">${q.graceAwarded?"★":"—"}</td>
-        <td style="font-size:11px">${q.reasoning||"—"}</td>
-        <td style="font-size:11px;color:#888">${q.improvement||"—"}</td>
+        <td style="text-align:center">${q.graceAwarded ? "★" : "—"}</td>
+        <td style="font-size:11px">${q.reasoning || "—"}</td>
+        <td style="font-size:11px;color:#888">${q.improvement || "—"}</td>
       </tr>`;
     }).join("");
     const html = `<!DOCTYPE html>
@@ -1560,7 +1569,7 @@ tr:nth-child(even){background:#fafafa;}
 <div class="hero">
   <div>
     <div class="student-name">${sn}</div>
-    <div class="student-sub">${paperTitle||"Exam"} · ${subject||""} · ${now}</div>
+    <div class="student-sub">${paperTitle || "Exam"} · ${subject || ""} · ${now}</div>
     <div class="bar-bg" style="margin-top:12px"><div class="bar-fill"></div></div>
     <div class="pct" style="margin-top:4px">${evaluation.percentage}% · Grade ${evaluation.grade}</div>
   </div>
@@ -1591,7 +1600,7 @@ ${evaluation.teacherNote ? `<div class="teacher-note">👨‍🏫 <div><strong>T
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ReportCard_${sn.replace(/\s+/g,"_")}_${paperTitle||"Exam"}.html`.replace(/[^a-zA-Z0-9._-]/g,"_");
+    a.download = `ReportCard_${sn.replace(/\s+/g, "_")}_${paperTitle || "Exam"}.html`.replace(/[^a-zA-Z0-9._-]/g, "_");
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1603,42 +1612,42 @@ ${evaluation.teacherNote ? `<div class="teacher-note">👨‍🏫 <div><strong>T
     if (!annTitle.trim() || !annBody.trim()) return alert("Fill title and message");
     setLoading(true);
     try {
-      const { data:u } = await supabase.auth.getUser();
-      const { error } = await supabase.from("announcements").insert([{ user_id:u.user?.id, title:annTitle, body:annBody, type:annType, target:annTarget, created_at:new Date().toISOString() }]);
+      const { data: u } = await supabase.auth.getUser();
+      const { error } = await supabase.from("announcements").insert([{ user_id: u.user?.id, title: annTitle, body: annBody, type: annType, target: annTarget, created_at: new Date().toISOString() }]);
       if (error) throw error;
       setAnnTitle(""); setAnnBody(""); fetchAnnouncements();
     } catch { alert("Failed to post"); } finally { setLoading(false); }
   };
 
-  const deleteAnnouncement = async (id:number) => {
-    await supabase.from("announcements").delete().eq("id",id);
+  const deleteAnnouncement = async (id: number) => {
+    await supabase.from("announcements").delete().eq("id", id);
     fetchAnnouncements();
   };
 
   // ── QUIZ FUNCTIONS ──
   const addQuestion = () => {
-    setQuestions(prev => [...prev, { text:"", options:["","","",""], correct:0, marks:1 }]);
+    setQuestions(prev => [...prev, { text: "", options: ["", "", "", ""], correct: 0, marks: 1 }]);
   };
 
-  const updateQuestion = (qi:number, field:string, val:any) => {
-    setQuestions(prev => prev.map((q,i) => i===qi ? {...q,[field]:val} : q));
+  const updateQuestion = (qi: number, field: string, val: any) => {
+    setQuestions(prev => prev.map((q, i) => i === qi ? { ...q, [field]: val } : q));
   };
 
-  const updateOption = (qi:number, oi:number, val:string) => {
-    setQuestions(prev => prev.map((q,i) => {
-      if (i!==qi) return q;
+  const updateOption = (qi: number, oi: number, val: string) => {
+    setQuestions(prev => prev.map((q, i) => {
+      if (i !== qi) return q;
       const opts = [...q.options]; opts[oi] = val;
-      return {...q, options:opts};
+      return { ...q, options: opts };
     }));
   };
 
-  const removeQuestion = (qi:number) => setQuestions(prev => prev.filter((_,i) => i!==qi));
+  const removeQuestion = (qi: number) => setQuestions(prev => prev.filter((_, i) => i !== qi));
 
   const saveQuiz = () => {
     if (!qTitle.trim()) return alert("Enter quiz title");
     if (questions.length === 0) return alert("Add at least one question");
     if (questions.some(q => !q.text.trim())) return alert("All questions need text");
-    if (questions.some(q => q.options.some((o:string) => !o.trim()))) return alert("All options must be filled");
+    if (questions.some(q => q.options.some((o: string) => !o.trim()))) return alert("All options must be filled");
     const quiz = {
       id: Date.now(),
       title: qTitle,
@@ -1648,7 +1657,7 @@ ${evaluation.teacherNote ? `<div class="teacher-note">👨‍🏫 <div><strong>T
       passMark: qPassMark,
       questions,
       createdAt: new Date().toISOString(),
-      totalMarks: questions.reduce((a:number,q:any)=>a+q.marks,0)
+      totalMarks: questions.reduce((a: number, q: any) => a + q.marks, 0)
     };
     const updated = [...quizzes, quiz];
     saveQuizzes(updated);
@@ -1668,14 +1677,14 @@ Return ONLY valid JSON array:
 Make sure options are complete sentences or phrases, not just letters. Mix difficulty within the set.`;
     try {
       const raw = await generateAILesson(prompt);
-      const clean = raw.replace(/```json|```/g,"").trim();
+      const clean = raw.replace(/```json|```/g, "").trim();
       const match = clean.match(/\[[\s\S]*\]/);
       if (!match) throw new Error("No JSON array found");
       const parsed = JSON.parse(match[0]);
-      setQuestions(parsed.map((q:any)=>({ text:q.text||"", options:q.options||["","","",""], correct:q.correct||0, marks:q.marks||1, explanation:q.explanation||"" })));
+      setQuestions(parsed.map((q: any) => ({ text: q.text || "", options: q.options || ["", "", "", ""], correct: q.correct || 0, marks: q.marks || 1, explanation: q.explanation || "" })));
       alert(`${parsed.length} questions generated! Review them below and save.`);
       setQuizView("create");
-    } catch (e:any) {
+    } catch (e: any) {
       alert("AI generation failed: " + e.message);
     }
     setAiGenLoading(false);
@@ -1722,7 +1731,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           ? { ...s, results: [...(s.results || []), studentResult] }
           : s
       );
-      try { localStorage.setItem("edu_sessions", JSON.stringify(updated)); } catch {}
+      try { localStorage.setItem("edu_sessions", JSON.stringify(updated)); } catch { }
       return updated;
     });
     setActiveSession((prev: any) =>
@@ -1732,43 +1741,43 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
   const endSession = () => {
     if (!activeSession) return;
-    const updatedSessions = sessions.map(s => s.id===activeSession.id ? {...s, active:false, endedAt:new Date().toISOString()} : s);
+    const updatedSessions = sessions.map(s => s.id === activeSession.id ? { ...s, active: false, endedAt: new Date().toISOString() } : s);
     saveSessions(updatedSessions);
     setActiveSession(null);
     setActiveQuiz(null);
     setQuizView("list");
   };
 
-  const deleteQuiz = (id:number) => {
+  const deleteQuiz = (id: number) => {
     if (!confirm("Delete this quiz?")) return;
-    saveQuizzes(quizzes.filter(q=>q.id!==id));
+    saveQuizzes(quizzes.filter(q => q.id !== id));
   };
 
   // ── COMPUTED ──
   const classAvg = useMemo(() => {
     if (!students.length) return 0;
-    return Math.round(students.reduce((a,s)=>a+Number(s.avg),0)/students.length);
+    return Math.round(students.reduce((a, s) => a + Number(s.avg), 0) / students.length);
   }, [students]);
 
   const gradeDistribution = useMemo(() => {
-    const dist = [{name:"A+ (90+)",val:0},{name:"A (80-89)",val:0},{name:"B (70-79)",val:0},{name:"C (60-69)",val:0},{name:"D (50-59)",val:0},{name:"F (<50)",val:0}];
-    students.forEach(s=>{
-      const a=Number(s.avg);
-      if(a>=90)dist[0].val++;else if(a>=80)dist[1].val++;else if(a>=70)dist[2].val++;else if(a>=60)dist[3].val++;else if(a>=50)dist[4].val++;else dist[5].val++;
+    const dist = [{ name: "A+ (90+)", val: 0 }, { name: "A (80-89)", val: 0 }, { name: "B (70-79)", val: 0 }, { name: "C (60-69)", val: 0 }, { name: "D (50-59)", val: 0 }, { name: "F (<50)", val: 0 }];
+    students.forEach(s => {
+      const a = Number(s.avg);
+      if (a >= 90) dist[0].val++; else if (a >= 80) dist[1].val++; else if (a >= 70) dist[2].val++; else if (a >= 60) dist[3].val++; else if (a >= 50) dist[4].val++; else dist[5].val++;
     });
-    return dist.filter(d=>d.val>0).map(d=>({...d,Students:d.val}));
+    return dist.filter(d => d.val > 0).map(d => ({ ...d, Students: d.val }));
   }, [students]);
 
   const attendanceChartData = useMemo(() => {
     return students.map(s => {
-      const rec = attendanceSummary[String(s.id)] || {present:0,absent:0};
+      const rec = attendanceSummary[String(s.id)] || { present: 0, absent: 0 };
       const total = rec.present + rec.absent;
-      return { name:s.name.split(" ")[0], rate:total>0?Math.round((rec.present/total)*100):0, present:rec.present, absent:rec.absent };
+      return { name: s.name.split(" ")[0], rate: total > 0 ? Math.round((rec.present / total) * 100) : 0, present: rec.present, absent: rec.absent };
     });
   }, [students, attendanceSummary]);
 
-  const chartData = students.map(s => ({name:s.name.split(" ")[0], avg:Number(s.avg)}));
-  const getAvgClass = (v:number) => v>=75?"avg-high":v>=50?"avg-mid":"avg-low";
+  const chartData = students.map(s => ({ name: s.name.split(" ")[0], avg: Number(s.avg) }));
+  const getAvgClass = (v: number) => v >= 75 ? "avg-high" : v >= 50 ? "avg-mid" : "avg-low";
   // ─────────────────────────────────────────────
   // OCR BENCHMARK
   // ─────────────────────────────────────────────
@@ -1777,7 +1786,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
     const page = await pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
-    canvas.width  = viewport.width;
+    canvas.width = viewport.width;
     canvas.height = viewport.height;
     const ctx = canvas.getContext("2d")!;
     await (page.render as any)({ canvasContext: ctx, viewport }).promise;
@@ -1842,7 +1851,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
         if (isGemini) {
           // Gemini: High concurrency (process 10 pages at once)
           const chunks: number[][] = [];
-          for (let i = 0; i < totalPages; i += 10) chunks.push(Array.from({length: Math.min(10, totalPages-i)}, (_, k) => i + k + 1));
+          for (let i = 0; i < totalPages; i += 10) chunks.push(Array.from({ length: Math.min(10, totalPages - i) }, (_, k) => i + k + 1));
           for (const chunk of chunks) {
             await Promise.all(chunk.map(p => processPage(p)));
           }
@@ -1869,6 +1878,9 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
         setOcrBenchResults({ [ocrEngine]: { text: mergedText, confidence: 90 } });
         setOcrBenchSelected(ocrEngine);
         setOcrProgress(`✅ Scanned all ${totalPages} pages with ${ocrEngine}`);
+        // Auto-populate evaluator with scanned text and go directly to evaluate phase
+        setEvalFromOcr(mergedText);
+        if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
         setEvalPhase("action");
 
       } else if (isPdf && ocrEngine === "trocr") {
@@ -1887,6 +1899,9 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           setOcrBenchResults({ [ocrEngine]: { text: res.merged_text, confidence: 90 } });
           setOcrBenchSelected(ocrEngine);
           setOcrProgress(`✓ Scanned ${res.total_pages} pages with Local Mode`);
+          // Auto-populate evaluator with scanned text
+          setEvalFromOcr(res.merged_text || "");
+          if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
           setEvalPhase("action");
         } else {
           setOcrProgress(`Error: ${res.error || res.message}`);
@@ -1905,6 +1920,10 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
         setOcrBenchResults({ "groq-vision": groqRes });
         setOcrBenchSelected("groq-vision");
         setOcrProgress("✓ Scan complete");
+        // Auto-populate evaluator with scanned text
+        const singleText = groqRes.text || groqRes.merged_text || "";
+        setEvalFromOcr(singleText);
+        if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
         setEvalPhase("action");
       }
     } catch (e: any) {
@@ -1926,7 +1945,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
       }).then(r => r.json());
       if (res.status === "success") setOcrEnhanced(res.enhanced_text);
       else alert("Enhancement failed: " + res.message);
-    } catch(e:any) { alert(e.message); }
+    } catch (e: any) { alert(e.message); }
     setOcrEnhLoading(false);
   };
 
@@ -1946,7 +1965,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
   return (
     <>
       <style>{STYLES}</style>
-      
+
       {/* ── AURORA AMBIENT BACKGROUND ── */}
       <div className="aurora-wrap" aria-hidden="true">
         <div className="aurora-blob blob-1" />
@@ -1956,13 +1975,13 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
       {/* Proctored Quiz Overlay */}
       {showProctoredQuiz && activeQuiz && (
-        <ProctoredQuizModal quiz={activeQuiz} onClose={handleQuizComplete}/>
+        <ProctoredQuizModal quiz={activeQuiz} onClose={handleQuizComplete} />
       )}
 
       <div className={`edu-app ${isSidebarOpen ? "sidebar-open" : ""}`}>
-        
+
         {/* ── FLOATING TOGGLE FAB ── */}
-        <button 
+        <button
           className={`sidebar-fab ${isSidebarOpen ? "hidden" : ""}`}
           onClick={() => setIsSidebarOpen(true)}
         >
@@ -1989,15 +2008,15 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           </div>
           <nav className="sidebar-nav">
             <div className="nav-section-label">Main</div>
-            {NAV_MAIN.map(n=>(
-              <button key={n.id} onClick={()=>setPage(n.id as Page)} className={`nav-item ${page===n.id?"active":""}`}>
+            {NAV_MAIN.map(n => (
+              <button key={n.id} onClick={() => setPage(n.id as Page)} className={`nav-item ${page === n.id ? "active" : ""}`}>
                 <span className="nav-icon">{n.icon}</span><span className="nav-item-label">{n.label}</span>
               </button>
             ))}
             <div className="nav-section-label">AI Tools</div>
-            {NAV_TOOLS.map((n:any)=>(
-              <button key={n.id} onClick={()=>{setPage(n.id as Page); if(n.id==="quiz") setQuizView("list");}} className={`nav-item ${page===n.id?"active":""}`}>
-                <span className="nav-icon">{n.icon}</span><span className="nav-item-label" style={{flex:1}}>{n.label}</span>
+            {NAV_TOOLS.map((n: any) => (
+              <button key={n.id} onClick={() => { setPage(n.id as Page); if (n.id === "quiz") setQuizView("list"); }} className={`nav-item ${page === n.id ? "active" : ""}`}>
+                <span className="nav-icon">{n.icon}</span><span className="nav-item-label" style={{ flex: 1 }}>{n.label}</span>
                 {n.badge && <span className="nav-badge">{n.badge}</span>}
               </button>
             ))}
@@ -2006,7 +2025,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
             <div className="sidebar-user-card">
               <div className="sidebar-user-label">Class Summary</div>
               <div className="sidebar-user-info">{students.length} students · {classAvg}% avg</div>
-              <div className="sidebar-user-sub">{quizzes.length} quiz{quizzes.length!==1?"zes":""} created</div>
+              <div className="sidebar-user-sub">{quizzes.length} quiz{quizzes.length !== 1 ? "zes" : ""} created</div>
             </div>
             <button onClick={logout} className="logout-btn"><span className="nav-icon">🚪</span><span className="logout-label">Sign Out</span></button>
           </div>
@@ -2014,12 +2033,12 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
         {/* ── MAIN ── */}
         <main className="main">
-          {loading && es!=="ocr" && es!=="ai" && !studyLoading && !aiGenLoading && (
-            <div className="loading-bar"><div className="spinner"/>Processing — please wait…</div>
+          {loading && es !== "ocr" && es !== "ai" && !studyLoading && !aiGenLoading && (
+            <div className="loading-bar"><div className="spinner" />Processing — please wait…</div>
           )}
 
           {/* ═══ DASHBOARD ═══ */}
-          {page==="dashboard" && (
+          {page === "dashboard" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Dashboard</h1>
@@ -2029,41 +2048,41 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 <div className="stat-card">
                   <div className="stat-label">Class Average</div>
                   <div className="stat-value stat-accent">{classAvg}%</div>
-                  <div className="stat-sub">{classAvg>=75?"Excellent performance":"Needs attention"}</div>
+                  <div className="stat-sub">{classAvg >= 75 ? "Excellent performance" : "Needs attention"}</div>
                 </div>
-                <div className="stat-card" style={{animationDelay:"0.07s"}}>
+                <div className="stat-card" style={{ animationDelay: "0.07s" }}>
                   <div className="stat-label">Total Students</div>
                   <div className="stat-value">{students.length}</div>
                   <div className="stat-sub">Enrolled</div>
                 </div>
-                <div className="stat-card" style={{animationDelay:"0.14s"}}>
+                <div className="stat-card" style={{ animationDelay: "0.14s" }}>
                   <div className="stat-label">Top Score</div>
-                  <div className="stat-value stat-accent2">{students.length?Math.max(...students.map(s=>Number(s.avg))):0}%</div>
-                  <div className="stat-sub">{students.length?students.find(s=>Number(s.avg)===Math.max(...students.map(x=>Number(x.avg))))?.name||"—":"—"}</div>
+                  <div className="stat-value stat-accent2">{students.length ? Math.max(...students.map(s => Number(s.avg))) : 0}%</div>
+                  <div className="stat-sub">{students.length ? students.find(s => Number(s.avg) === Math.max(...students.map(x => Number(x.avg))))?.name || "—" : "—"}</div>
                 </div>
-                <div className="stat-card" style={{animationDelay:"0.21s"}}>
+                <div className="stat-card" style={{ animationDelay: "0.21s" }}>
                   <div className="stat-label">Needs Support</div>
-                  <div className="stat-value stat-gold">{students.filter(s=>Number(s.avg)<50).length}</div>
+                  <div className="stat-value stat-gold">{students.filter(s => Number(s.avg) < 50).length}</div>
                   <div className="stat-sub">Below 50%</div>
                 </div>
               </div>
 
               <div className="panel">
                 <div className="panel-title"><span>◈</span> Performance Overview</div>
-                <div style={{width:"100%",height:260}}>
+                <div style={{ width: "100%", height: 260 }}>
                   <ResponsiveContainer>
                     <BarChart data={chartData} barSize={22}>
                       <defs>
                         <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#7c6fff"/>
-                          <stop offset="100%" stopColor="#4a3fb5" stopOpacity={0.6}/>
+                          <stop offset="0%" stopColor="#7c6fff" />
+                          <stop offset="100%" stopColor="#4a3fb5" stopOpacity={0.6} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false}/>
-                      <XAxis dataKey="name" stroke="#3c3c5c" tick={{fontSize:11,fontFamily:"DM Sans",fill:"#8a8aaa"}} axisLine={false} tickLine={false}/>
-                      <YAxis stroke="#3c3c5c" tick={{fontSize:11,fontFamily:"DM Sans",fill:"#8a8aaa"}} axisLine={false} tickLine={false} domain={[0,100]}/>
-                      <Tooltip content={<CustomTooltip/>} cursor={{fill:"rgba(255,255,255,0.022)"}}/>
-                      <Bar dataKey="avg" name="Average" fill="url(#barGrad)" radius={[6,6,0,0]}/>
+                      <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false} />
+                      <XAxis dataKey="name" stroke="#3c3c5c" tick={{ fontSize: 11, fontFamily: "DM Sans", fill: "#8a8aaa" }} axisLine={false} tickLine={false} />
+                      <YAxis stroke="#3c3c5c" tick={{ fontSize: 11, fontFamily: "DM Sans", fill: "#8a8aaa" }} axisLine={false} tickLine={false} domain={[0, 100]} />
+                      <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.022)" }} />
+                      <Bar dataKey="avg" name="Average" fill="url(#barGrad)" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -2076,8 +2095,8 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               </div>
 
               <div className="panel">
-                <div className="panel-title" style={{justifyContent:"space-between"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:9}}><span>✦</span> Grade Records</div>
+                <div className="panel-title" style={{ justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><span>✦</span> Grade Records</div>
                 </div>
                 <table className="data-table">
                   <thead>
@@ -2086,16 +2105,16 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   <tbody>
                     {students.map(s => (
                       <tr key={s.id}>
-                        <td style={{color:"var(--text)",fontWeight:500}}>{s.name}</td>
+                        <td style={{ color: "var(--text)", fontWeight: 500 }}>{s.name}</td>
                         <td>{s.grade}</td>
                         <td><span className={`avg-badge ${getAvgClass(Number(s.avg))}`}>{s.avg}%</span></td>
                         <td>
-                          <span style={{fontSize:11,color:Number(s.avg)>=75?"var(--accent3)":Number(s.avg)>=50?"var(--gold)":"var(--accent2)"}}>
-                            {Number(s.avg)>=75?"✓ Good":Number(s.avg)>=50?"△ Average":"⚠ Weak"}
+                          <span style={{ fontSize: 11, color: Number(s.avg) >= 75 ? "var(--accent3)" : Number(s.avg) >= 50 ? "var(--gold)" : "var(--accent2)" }}>
+                            {Number(s.avg) >= 75 ? "✓ Good" : Number(s.avg) >= 50 ? "△ Average" : "⚠ Weak"}
                           </span>
                         </td>
                         <td>
-                          <button onClick={()=>deleteStudent(s.id)} className="btn-ghost btn-sm">Remove</button>
+                          <button onClick={() => deleteStudent(s.id)} className="btn-ghost btn-sm">Remove</button>
                         </td>
                       </tr>
                     ))}
@@ -2104,33 +2123,33 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                     )}
                   </tbody>
                 </table>
-                <hr className="divider"/>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 120px 100px",gap:12,alignItems:"flex-end"}}>
-                  <div className="field-group" style={{marginBottom:0}}>
+                <hr className="divider" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 120px 100px", gap: 12, alignItems: "flex-end" }}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Student Name</label>
-                    <input value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addStudent()} className="field-input" placeholder="Aarav Shah"/>
+                    <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && addStudent()} className="field-input" placeholder="Aarav Shah" />
                   </div>
-                  <div className="field-group" style={{marginBottom:0}}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Grade / Year</label>
-                    <select value={grade} onChange={e=>setGrade(e.target.value)} className="field-input" style={{cursor:"pointer"}}>
+                    <select value={grade} onChange={e => setGrade(e.target.value)} className="field-input" style={{ cursor: "pointer" }}>
                       <option value="">— Select —</option>
-                      {GRADE_GROUPS.map(g=>(
-                        <optgroup key={g.label} label={g.label}>{g.opts.map(o=><option key={o}>{o}</option>)}</optgroup>
+                      {GRADE_GROUPS.map(g => (
+                        <optgroup key={g.label} label={g.label}>{g.opts.map(o => <option key={o}>{o}</option>)}</optgroup>
                       ))}
                     </select>
                   </div>
-                  <div className="field-group" style={{marginBottom:0}}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Average %</label>
-                    <input value={avg} onChange={e=>setAvg(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addStudent()} className="field-input" placeholder="84" type="number" min="0" max="100"/>
+                    <input value={avg} onChange={e => setAvg(e.target.value)} onKeyDown={e => e.key === "Enter" && addStudent()} className="field-input" placeholder="84" type="number" min="0" max="100" />
                   </div>
-                  <button onClick={addStudent} className="btn-primary" style={{whiteSpace:"nowrap" as const,height:44}}>+ Add</button>
+                  <button onClick={addStudent} className="btn-primary" style={{ whiteSpace: "nowrap" as const, height: 44 }}>+ Add</button>
                 </div>
               </div>
             </>
           )}
 
           {/* ═══ ANALYTICS ═══ */}
-          {page==="analytics" && (
+          {page === "analytics" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Analytics</h1>
@@ -2148,42 +2167,42 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                     </div>
                     <div className="insight-card">
                       <div className="insight-label">Passing Rate</div>
-                      <div className="insight-value stat-accent2">{Math.round((students.filter(s=>Number(s.avg)>=50).length/students.length)*100)}%</div>
-                      <div className="insight-sub">{students.filter(s=>Number(s.avg)>=50).length} of {students.length} passing</div>
+                      <div className="insight-value stat-accent2">{Math.round((students.filter(s => Number(s.avg) >= 50).length / students.length) * 100)}%</div>
+                      <div className="insight-sub">{students.filter(s => Number(s.avg) >= 50).length} of {students.length} passing</div>
                     </div>
                     <div className="insight-card">
                       <div className="insight-label">Std Deviation</div>
                       <div className="insight-value stat-gold">{
-                        (() => { const v=students.reduce((a,s)=>a+Math.pow(Number(s.avg)-classAvg,2),0)/students.length; return Math.round(Math.sqrt(v)); })()
+                        (() => { const v = students.reduce((a, s) => a + Math.pow(Number(s.avg) - classAvg, 2), 0) / students.length; return Math.round(Math.sqrt(v)); })()
                       }%</div>
                       <div className="insight-sub">Score spread</div>
                     </div>
                   </div>
                   <div className="chart-row">
-                    <div className="panel" style={{marginBottom:0}}>
+                    <div className="panel" style={{ marginBottom: 0 }}>
                       <div className="panel-title"><span>📈</span> Score Distribution</div>
-                      <div style={{height:220}}>
+                      <div style={{ height: 220 }}>
                         <ResponsiveContainer>
                           <BarChart data={chartData} barSize={18}>
-                            <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false}/>
-                            <XAxis dataKey="name" tick={{fontSize:10,fill:"#8a8aaa"}} axisLine={false} tickLine={false}/>
-                            <YAxis domain={[0,100]} tick={{fontSize:10,fill:"#8a8aaa"}} axisLine={false} tickLine={false}/>
-                            <Tooltip content={<CustomTooltip/>} cursor={{fill:"rgba(255,255,255,0.02)"}}/>
-                            <Bar dataKey="avg" name="Average" fill="url(#barGrad)" radius={[4,4,0,0]}/>
+                            <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#8a8aaa" }} axisLine={false} tickLine={false} />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#8a8aaa" }} axisLine={false} tickLine={false} />
+                            <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.02)" }} />
+                            <Bar dataKey="avg" name="Average" fill="url(#barGrad)" radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
-                    <div className="panel" style={{marginBottom:0}}>
+                    <div className="panel" style={{ marginBottom: 0 }}>
                       <div className="panel-title"><span>🥧</span> Grade Distribution</div>
-                      <div style={{height:220}}>
+                      <div style={{ height: 220 }}>
                         <ResponsiveContainer>
                           <PieChart>
                             <Pie data={gradeDistribution} dataKey="Students" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={40}>
-                              {gradeDistribution.map((_:any,i:number)=><Cell key={i} fill={PIE_COLORS[i%PIE_COLORS.length]}/>)}
+                              {gradeDistribution.map((_: any, i: number) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                             </Pie>
-                            <Tooltip content={<CustomTooltip/>}/>
-                            <Legend wrapperStyle={{fontSize:11,color:"var(--text2)"}}/>
+                            <Tooltip content={<CustomTooltip />} />
+                            <Legend wrapperStyle={{ fontSize: 11, color: "var(--text2)" }} />
                           </PieChart>
                         </ResponsiveContainer>
                       </div>
@@ -2191,15 +2210,15 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   </div>
                   <div className="panel">
                     <div className="panel-title"><span>✅</span> Attendance Rate by Student</div>
-                    {attendanceChartData.some(d=>d.rate>0) ? (
-                      <div style={{height:230}}>
+                    {attendanceChartData.some(d => d.rate > 0) ? (
+                      <div style={{ height: 230 }}>
                         <ResponsiveContainer>
                           <BarChart data={attendanceChartData} barSize={18}>
-                            <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false}/>
-                            <XAxis dataKey="name" tick={{fontSize:10,fill:"#8a8aaa"}} axisLine={false} tickLine={false}/>
-                            <YAxis domain={[0,100]} tick={{fontSize:10,fill:"#8a8aaa"}} axisLine={false} tickLine={false}/>
-                            <Tooltip content={<CustomTooltip/>} cursor={{fill:"rgba(255,255,255,0.02)"}}/>
-                            <Bar dataKey="rate" name="Attendance" fill="var(--accent3)" radius={[4,4,0,0]} opacity={0.85}/>
+                            <CartesianGrid stroke="rgba(255,255,255,0.034)" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#8a8aaa" }} axisLine={false} tickLine={false} />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#8a8aaa" }} axisLine={false} tickLine={false} />
+                            <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.02)" }} />
+                            <Bar dataKey="rate" name="Attendance" fill="var(--accent3)" radius={[4, 4, 0, 0]} opacity={0.85} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
@@ -2214,28 +2233,28 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                         <tr><th>Name</th><th>Grade</th><th>Avg %</th><th>Grade</th><th>Present</th><th>Absent</th><th>Att. Rate</th><th>Status</th></tr>
                       </thead>
                       <tbody>
-                        {students.map(s=>{
-                          const rec=attendanceSummary[String(s.id)]||{present:0,absent:0};
-                          const total=rec.present+rec.absent;
-                          const rate=total>0?Math.round((rec.present/total)*100):0;
+                        {students.map(s => {
+                          const rec = attendanceSummary[String(s.id)] || { present: 0, absent: 0 };
+                          const total = rec.present + rec.absent;
+                          const rate = total > 0 ? Math.round((rec.present / total) * 100) : 0;
                           return (
                             <tr key={s.id}>
-                              <td style={{color:"var(--text)",fontWeight:500}}>{s.name}</td>
+                              <td style={{ color: "var(--text)", fontWeight: 500 }}>{s.name}</td>
                               <td>{s.grade}</td>
                               <td><span className={`avg-badge ${getAvgClass(Number(s.avg))}`}>{s.avg}%</span></td>
-                              <td style={{color:"var(--accent)",fontWeight:600}}>{getLetterGrade(Number(s.avg))}</td>
-                              <td style={{color:"var(--accent3)"}}>{rec.present}</td>
-                              <td style={{color:"var(--accent2)"}}>{rec.absent}</td>
+                              <td style={{ color: "var(--accent)", fontWeight: 600 }}>{getLetterGrade(Number(s.avg))}</td>
+                              <td style={{ color: "var(--accent3)" }}>{rec.present}</td>
+                              <td style={{ color: "var(--accent2)" }}>{rec.absent}</td>
                               <td>
-                                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                                  <div style={{flex:1,height:4,background:"rgba(255,255,255,0.06)",borderRadius:4,overflow:"hidden",maxWidth:60}}>
-                                    <div style={{width:`${rate}%`,height:"100%",background:rate>=75?"var(--accent3)":rate>=50?"var(--gold)":"var(--accent2)",borderRadius:4}}/>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <div style={{ flex: 1, height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden", maxWidth: 60 }}>
+                                    <div style={{ width: `${rate}%`, height: "100%", background: rate >= 75 ? "var(--accent3)" : rate >= 50 ? "var(--gold)" : "var(--accent2)", borderRadius: 4 }} />
                                   </div>
-                                  <span style={{fontSize:11,fontWeight:500,color:rate>=75?"var(--accent3)":rate>=50?"var(--gold)":"var(--accent2)"}}>{total?rate+"%":"—"}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 500, color: rate >= 75 ? "var(--accent3)" : rate >= 50 ? "var(--gold)" : "var(--accent2)" }}>{total ? rate + "%" : "—"}</span>
                                 </div>
                               </td>
-                              <td><span style={{fontSize:11,color:Number(s.avg)>=75&&rate>=75?"var(--accent3)":Number(s.avg)<50||rate<50?"var(--accent2)":"var(--gold)"}}>
-                                {Number(s.avg)>=75&&rate>=75?"✓ On track":Number(s.avg)<50||rate<50?"⚠ At risk":"△ Monitor"}
+                              <td><span style={{ fontSize: 11, color: Number(s.avg) >= 75 && rate >= 75 ? "var(--accent3)" : Number(s.avg) < 50 || rate < 50 ? "var(--accent2)" : "var(--gold)" }}>
+                                {Number(s.avg) >= 75 && rate >= 75 ? "✓ On track" : Number(s.avg) < 50 || rate < 50 ? "⚠ At risk" : "△ Monitor"}
                               </span></td>
                             </tr>
                           );
@@ -2249,7 +2268,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ ATTENDANCE ═══ */}
-          {page==="attendance" && (
+          {page === "attendance" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Attendance</h1>
@@ -2267,25 +2286,25 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       </thead>
                       <tbody>
                         {students.map(s => {
-                          const rec = attendanceSummary[String(s.id)] || {present:0,absent:0};
+                          const rec = attendanceSummary[String(s.id)] || { present: 0, absent: 0 };
                           const total = rec.present + rec.absent;
-                          const rate = total > 0 ? Math.round((rec.present/total)*100) : 0;
+                          const rate = total > 0 ? Math.round((rec.present / total) * 100) : 0;
                           return (
                             <tr key={s.id}>
-                              <td style={{color:"var(--text)",fontWeight:500}}>{s.name}</td>
+                              <td style={{ color: "var(--text)", fontWeight: 500 }}>{s.name}</td>
                               <td>{s.grade}</td>
-                              <td><span style={{color:"var(--accent3)",fontWeight:500}}>✓ {rec.present}</span></td>
-                              <td><span style={{color:"var(--accent2)",fontWeight:500}}>✗ {rec.absent}</span></td>
-                              <td style={{color:"var(--text)"}}>{total || "—"}</td>
+                              <td><span style={{ color: "var(--accent3)", fontWeight: 500 }}>✓ {rec.present}</span></td>
+                              <td><span style={{ color: "var(--accent2)", fontWeight: 500 }}>✗ {rec.absent}</span></td>
+                              <td style={{ color: "var(--text)" }}>{total || "—"}</td>
                               <td>
                                 {total > 0 ? (
-                                  <div style={{display:"flex",alignItems:"center",gap:10}}>
-                                    <div style={{flex:1,height:5,background:"rgba(255,255,255,0.06)",borderRadius:4,overflow:"hidden",maxWidth:80}}>
-                                      <div style={{width:`${rate}%`,height:"100%",background:rate>=75?"var(--accent3)":rate>=50?"var(--gold)":"var(--accent2)",borderRadius:4,transition:"width 0.8s ease"}}/>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                    <div style={{ flex: 1, height: 5, background: "rgba(255,255,255,0.06)", borderRadius: 4, overflow: "hidden", maxWidth: 80 }}>
+                                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 75 ? "var(--accent3)" : rate >= 50 ? "var(--gold)" : "var(--accent2)", borderRadius: 4, transition: "width 0.8s ease" }} />
                                     </div>
-                                    <span className={`avg-badge ${rate>=75?"avg-high":rate>=50?"avg-mid":"avg-low"}`}>{rate}%</span>
+                                    <span className={`avg-badge ${rate >= 75 ? "avg-high" : rate >= 50 ? "avg-mid" : "avg-low"}`}>{rate}%</span>
                                   </div>
-                                ) : <span style={{color:"var(--muted)",fontSize:12}}>No records</span>}
+                                ) : <span style={{ color: "var(--muted)", fontSize: 12 }}>No records</span>}
                               </td>
                             </tr>
                           );
@@ -2296,11 +2315,11 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 </div>
               )}
               <div className="panel">
-                <div className="panel-title" style={{justifyContent:"space-between",flexWrap:"wrap" as const,gap:10}}>
-                  <div style={{display:"flex",alignItems:"center",gap:9}}><span>✦</span> Mark Attendance</div>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <label style={{fontSize:10,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>DATE</label>
-                    <input type="date" value={attDate} onChange={e=>setAttDate(e.target.value)} className="field-input" style={{width:"auto",padding:"6px 11px",fontSize:12}}/>
+                <div className="panel-title" style={{ justifyContent: "space-between", flexWrap: "wrap" as const, gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><span>✦</span> Mark Attendance</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>DATE</label>
+                    <input type="date" value={attDate} onChange={e => setAttDate(e.target.value)} className="field-input" style={{ width: "auto", padding: "6px 11px", fontSize: 12 }} />
                   </div>
                 </div>
                 {!students.length ? (
@@ -2308,26 +2327,26 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 ) : (
                   <>
                     <div className="att-summary">
-                      <div className="att-pill att-pill-present">✓ Present: {students.filter(s=>(attendance[s.id]||"Present")==="Present").length}</div>
-                      <div className="att-pill att-pill-absent">✗ Absent: {students.filter(s=>attendance[s.id]==="Absent").length}</div>
+                      <div className="att-pill att-pill-present">✓ Present: {students.filter(s => (attendance[s.id] || "Present") === "Present").length}</div>
+                      <div className="att-pill att-pill-absent">✗ Absent: {students.filter(s => attendance[s.id] === "Absent").length}</div>
                       <div className="att-pill att-pill-rate">Total: {students.length} students</div>
                     </div>
-                    <div style={{marginBottom:14,display:"flex",gap:9}}>
-                      <button onClick={()=>{const all:Record<string,string>={};students.forEach(s=>all[s.id]="Present");setAttendance(all);}} className="btn-success btn-sm">✓ All Present</button>
-                      <button onClick={()=>{const all:Record<string,string>={};students.forEach(s=>all[s.id]="Absent");setAttendance(all);}} className="btn-danger btn-sm">✗ All Absent</button>
+                    <div style={{ marginBottom: 14, display: "flex", gap: 9 }}>
+                      <button onClick={() => { const all: Record<string, string> = {}; students.forEach(s => all[s.id] = "Present"); setAttendance(all); }} className="btn-success btn-sm">✓ All Present</button>
+                      <button onClick={() => { const all: Record<string, string> = {}; students.forEach(s => all[s.id] = "Absent"); setAttendance(all); }} className="btn-danger btn-sm">✗ All Absent</button>
                     </div>
                     {students.map(s => (
                       <div key={s.id} className="attendance-row">
                         <div>
-                          <div className="attendance-name">{s.name}<span style={{marginLeft:10,fontSize:11,color:"var(--muted)",fontWeight:300}}>{s.grade}</span></div>
+                          <div className="attendance-name">{s.name}<span style={{ marginLeft: 10, fontSize: 11, color: "var(--muted)", fontWeight: 300 }}>{s.grade}</span></div>
                           {attendanceSummary[String(s.id)] && (() => {
-                            const rec=attendanceSummary[String(s.id)]; const total=rec.present+rec.absent; const rate=total>0?Math.round((rec.present/total)*100):0;
-                            return <div style={{fontSize:11,color:"var(--muted)",marginTop:2,fontWeight:300}}>Overall: {rec.present}P / {rec.absent}A · {total>0?rate+"%":"No records"}</div>;
+                            const rec = attendanceSummary[String(s.id)]; const total = rec.present + rec.absent; const rate = total > 0 ? Math.round((rec.present / total) * 100) : 0;
+                            return <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, fontWeight: 300 }}>Overall: {rec.present}P / {rec.absent}A · {total > 0 ? rate + "%" : "No records"}</div>;
                           })()}
                         </div>
-                        <div style={{display:"flex",alignItems:"center",gap:10}}>
-                          <div style={{width:8,height:8,borderRadius:"50%",background:(attendance[s.id]||"Present")==="Present"?"var(--accent3)":"var(--accent2)",transition:"background 0.2s"}}/>
-                          <select className="att-select" value={attendance[s.id]||"Present"} onChange={e=>setAttendance({...attendance,[s.id]:e.target.value})}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: (attendance[s.id] || "Present") === "Present" ? "var(--accent3)" : "var(--accent2)", transition: "background 0.2s" }} />
+                          <select className="att-select" value={attendance[s.id] || "Present"} onChange={e => setAttendance({ ...attendance, [s.id]: e.target.value })}>
                             <option>Present</option><option>Absent</option>
                           </select>
                         </div>
@@ -2343,7 +2362,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ QUIZ & TESTS ═══ */}
-          {page==="quiz" && (
+          {page === "quiz" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Quiz & Tests</h1>
@@ -2351,22 +2370,22 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               </div>
 
               {/* ─── QUIZ LIST ─── */}
-              {quizView==="list" && (
+              {quizView === "list" && (
                 <>
-                  <div style={{display:"flex",gap:10,marginBottom:20}}>
-                    <button onClick={()=>setQuizView("create")} className="btn-primary">+ Create Quiz</button>
-                    <button onClick={()=>setQuizView("ai-gen")} className="btn-gold">✦ AI Generate Quiz</button>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                    <button onClick={() => setQuizView("create")} className="btn-primary">+ Create Quiz</button>
+                    <button onClick={() => setQuizView("ai-gen")} className="btn-gold">✦ AI Generate Quiz</button>
                   </div>
 
                   {/* Active Session Banner */}
                   {activeSession && (
-                    <div style={{background:"rgba(0,219,160,0.07)",border:"1px solid rgba(0,219,160,0.25)",borderRadius:"var(--radius)",padding:"18px 22px",marginBottom:16,display:"flex",alignItems:"center",gap:16}}>
-                      <div style={{width:12,height:12,borderRadius:"50%",background:"var(--accent3)",boxShadow:"0 0 10px rgba(0,219,160,0.6)",animation:"livePulse 2s infinite",flexShrink:0}}/>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>Live Session: {activeSession.quizTitle}</div>
-                        <div style={{fontSize:11.5,color:"var(--muted)",marginTop:2}}>{activeSession.results?.length||0} submission{activeSession.results?.length!==1?"s":""} received</div>
+                    <div style={{ background: "rgba(0,219,160,0.07)", border: "1px solid rgba(0,219,160,0.25)", borderRadius: "var(--radius)", padding: "18px 22px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16 }}>
+                      <div style={{ width: 12, height: 12, borderRadius: "50%", background: "var(--accent3)", boxShadow: "0 0 10px rgba(0,219,160,0.6)", animation: "livePulse 2s infinite", flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Live Session: {activeSession.quizTitle}</div>
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>{activeSession.results?.length || 0} submission{activeSession.results?.length !== 1 ? "s" : ""} received</div>
                       </div>
-                      <button onClick={()=>setQuizView("session")} className="btn-success btn-sm">View Session →</button>
+                      <button onClick={() => setQuizView("session")} className="btn-success btn-sm">View Session →</button>
                       <button onClick={endSession} className="btn-danger btn-sm">End Session</button>
                     </div>
                   )}
@@ -2374,30 +2393,30 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   {!quizzes.length ? (
                     <div className="panel"><div className="empty-state"><div className="empty-state-icon">🎯</div><p>No quizzes yet. Create one above or generate with AI.</p></div></div>
                   ) : (
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:12}}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 12 }}>
                       {quizzes.map(quiz => (
-                        <div key={quiz.id} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--radius)",padding:"20px 22px",transition:"border-color 0.2s,box-shadow 0.2s"}}
-                          onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.borderColor="rgba(124,111,255,0.25)";(e.currentTarget as HTMLElement).style.boxShadow="0 8px 28px rgba(0,0,0,0.3)";}}
-                          onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.borderColor="rgba(255,255,255,0.055)";(e.currentTarget as HTMLElement).style.boxShadow="none";}}>
-                          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,marginBottom:14}}>
+                        <div key={quiz.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "20px 22px", transition: "border-color 0.2s,box-shadow 0.2s" }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,111,255,0.25)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(0,0,0,0.3)"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.055)"; (e.currentTarget as HTMLElement).style.boxShadow = "none"; }}>
+                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
                             <div>
-                              <div style={{fontSize:15,fontWeight:600,color:"var(--text)",marginBottom:4}}>{quiz.title}</div>
-                              <div style={{fontSize:11.5,color:"var(--muted)",fontWeight:300}}>{quiz.subject} · {quiz.grade}</div>
+                              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{quiz.title}</div>
+                              <div style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 300 }}>{quiz.subject} · {quiz.grade}</div>
                             </div>
-                            <div style={{textAlign:"right" as const,flexShrink:0}}>
-                              <div style={{fontSize:22,fontWeight:700,fontFamily:"var(--font-serif)",color:"var(--accent)"}}>{quiz.questions.length}</div>
-                              <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>QUESTIONS</div>
+                            <div style={{ textAlign: "right" as const, flexShrink: 0 }}>
+                              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-serif)", color: "var(--accent)" }}>{quiz.questions.length}</div>
+                              <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>QUESTIONS</div>
                             </div>
                           </div>
-                          <div style={{display:"flex",gap:8,flexWrap:"wrap" as const,marginBottom:16}}>
-                            <span style={{fontSize:11,color:"var(--muted)",background:"rgba(255,255,255,0.04)",border:"1px solid var(--border)",borderRadius:6,padding:"3px 10px"}}>⏱ {quiz.duration} min</span>
-                            <span style={{fontSize:11,color:"var(--muted)",background:"rgba(255,255,255,0.04)",border:"1px solid var(--border)",borderRadius:6,padding:"3px 10px"}}>📊 {quiz.totalMarks} marks</span>
-                            <span style={{fontSize:11,color:"var(--muted)",background:"rgba(255,255,255,0.04)",border:"1px solid var(--border)",borderRadius:6,padding:"3px 10px"}}>✓ Pass: {quiz.passMark}%</span>
-                            <span style={{fontSize:11,color:"var(--accent3)",background:"rgba(0,219,160,0.07)",border:"1px solid rgba(0,219,160,0.18)",borderRadius:6,padding:"3px 10px"}}>🔒 Proctored</span>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginBottom: 16 }}>
+                            <span style={{ fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 6, padding: "3px 10px" }}>⏱ {quiz.duration} min</span>
+                            <span style={{ fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 6, padding: "3px 10px" }}>📊 {quiz.totalMarks} marks</span>
+                            <span style={{ fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 6, padding: "3px 10px" }}>✓ Pass: {quiz.passMark}%</span>
+                            <span style={{ fontSize: 11, color: "var(--accent3)", background: "rgba(0,219,160,0.07)", border: "1px solid rgba(0,219,160,0.18)", borderRadius: 6, padding: "3px 10px" }}>🔒 Proctored</span>
                           </div>
-                          <div style={{display:"flex",gap:8}}>
-                            <button onClick={()=>startSession(quiz)} className="btn-primary btn-sm" style={{flex:1}}>▶ Start Session</button>
-                            <button onClick={()=>deleteQuiz(quiz.id)} className="btn-danger btn-sm">Delete</button>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => startSession(quiz)} className="btn-primary btn-sm" style={{ flex: 1 }}>▶ Start Session</button>
+                            <button onClick={() => deleteQuiz(quiz.id)} className="btn-danger btn-sm">Delete</button>
                           </div>
                         </div>
                       ))}
@@ -2405,24 +2424,24 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   )}
 
                   {/* Past Sessions */}
-                  {sessions.filter(s=>!s.active).length > 0 && (
-                    <div className="panel" style={{marginTop:16}}>
+                  {sessions.filter(s => !s.active).length > 0 && (
+                    <div className="panel" style={{ marginTop: 16 }}>
                       <div className="panel-title"><span>📁</span> Past Sessions</div>
-                      {sessions.filter(s=>!s.active).slice().reverse().map(sess => (
+                      {sessions.filter(s => !s.active).slice().reverse().map(sess => (
                         <div key={sess.id} className="session-card">
-                          <div className="session-status-dot session-ended"/>
-                          <div style={{flex:1}}>
-                            <div style={{fontSize:13,fontWeight:500,color:"var(--text)"}}>{sess.quizTitle}</div>
-                            <div style={{fontSize:11.5,color:"var(--muted)",marginTop:2}}>
-                              {new Date(sess.startedAt).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})} · {sess.results?.length||0} submissions
+                          <div className="session-status-dot session-ended" />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{sess.quizTitle}</div>
+                            <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
+                              {new Date(sess.startedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })} · {sess.results?.length || 0} submissions
                             </div>
                           </div>
                           {sess.results?.length > 0 && (
-                            <div style={{textAlign:"right" as const}}>
-                              <div style={{fontSize:13,fontWeight:600,color:"var(--accent)"}}>
-                                Avg: {Math.round(sess.results.reduce((a:number,r:any)=>a+r.percentage,0)/sess.results.length)}%
+                            <div style={{ textAlign: "right" as const }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>
+                                Avg: {Math.round(sess.results.reduce((a: number, r: any) => a + r.percentage, 0) / sess.results.length)}%
                               </div>
-                              <div style={{fontSize:11,color:"var(--muted)"}}>{sess.results.filter((r:any)=>r.terminated).length} terminated</div>
+                              <div style={{ fontSize: 11, color: "var(--muted)" }}>{sess.results.filter((r: any) => r.terminated).length} terminated</div>
                             </div>
                           )}
                         </div>
@@ -2433,50 +2452,50 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               )}
 
               {/* ─── AI GENERATE ─── */}
-              {quizView==="ai-gen" && (
+              {quizView === "ai-gen" && (
                 <>
-                  <div style={{display:"flex",gap:10,marginBottom:20}}>
-                    <button onClick={()=>setQuizView("list")} className="btn-ghost">← Back to Quizzes</button>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                    <button onClick={() => setQuizView("list")} className="btn-ghost">← Back to Quizzes</button>
                   </div>
                   <div className="panel">
                     <div className="panel-title"><span>✦</span> AI Quiz Generator</div>
-                    <div style={{background:"linear-gradient(135deg,rgba(124,111,255,0.06),rgba(0,219,160,0.04))",border:"1px solid rgba(124,111,255,0.18)",borderRadius:"var(--radius)",padding:"18px 22px",marginBottom:22}}>
-                      <div style={{fontSize:11,fontWeight:700,color:"var(--accent)",letterSpacing:1.5,marginBottom:7}}>✦ HOW IT WORKS</div>
-                      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.8,fontWeight:300}}>
+                    <div style={{ background: "linear-gradient(135deg,rgba(124,111,255,0.06),rgba(0,219,160,0.04))", border: "1px solid rgba(124,111,255,0.18)", borderRadius: "var(--radius)", padding: "18px 22px", marginBottom: 22 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", letterSpacing: 1.5, marginBottom: 7 }}>✦ HOW IT WORKS</div>
+                      <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.8, fontWeight: 300 }}>
                         Enter a topic and configure options → AI generates complete MCQ questions with correct answers → Review and edit questions → Save as proctored quiz → Share with students
                       </div>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                      <div className="field-group" style={{gridColumn:"span 2"}}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <div className="field-group" style={{ gridColumn: "span 2" }}>
                         <label className="field-label">Topic *</label>
-                        <input className="field-input" placeholder="e.g. Photosynthesis, Newton's Laws, World War II, Algebra…" value={aiQuizTopic} onChange={e=>setAiQuizTopic(e.target.value)}/>
+                        <input className="field-input" placeholder="e.g. Photosynthesis, Newton's Laws, World War II, Algebra…" value={aiQuizTopic} onChange={e => setAiQuizTopic(e.target.value)} />
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Grade / Class</label>
-                        <select className="field-input" value={qGrade} onChange={e=>setQGrade(e.target.value)} style={{cursor:"pointer"}}>
-                          {[...GRADE_GROUPS[0].opts,...GRADE_GROUPS[1].opts].map(g=><option key={g}>{g}</option>)}
+                        <select className="field-input" value={qGrade} onChange={e => setQGrade(e.target.value)} style={{ cursor: "pointer" }}>
+                          {[...GRADE_GROUPS[0].opts, ...GRADE_GROUPS[1].opts].map(g => <option key={g}>{g}</option>)}
                         </select>
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Difficulty</label>
-                        <select className="field-input" value={aiQuizDiff} onChange={e=>setAiQuizDiff(e.target.value)} style={{cursor:"pointer"}}>
+                        <select className="field-input" value={aiQuizDiff} onChange={e => setAiQuizDiff(e.target.value)} style={{ cursor: "pointer" }}>
                           <option>Easy</option><option>Medium</option><option>Hard</option><option>Mixed</option>
                         </select>
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Number of Questions</label>
-                        <select className="field-input" value={aiQuizNum} onChange={e=>setAiQuizNum(Number(e.target.value))} style={{cursor:"pointer"}}>
-                          {[5,10,15,20,25,30].map(n=><option key={n}>{n}</option>)}
+                        <select className="field-input" value={aiQuizNum} onChange={e => setAiQuizNum(Number(e.target.value))} style={{ cursor: "pointer" }}>
+                          {[5, 10, 15, 20, 25, 30].map(n => <option key={n}>{n}</option>)}
                         </select>
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Quiz Title</label>
-                        <input className="field-input" placeholder="e.g. Chapter 3 Quiz" value={qTitle} onChange={e=>setQTitle(e.target.value)}/>
+                        <input className="field-input" placeholder="e.g. Chapter 3 Quiz" value={qTitle} onChange={e => setQTitle(e.target.value)} />
                       </div>
                     </div>
                     <div className="btn-row">
                       <button onClick={generateAIQuiz} className="btn-gold" disabled={aiGenLoading}>
-                        {aiGenLoading?<><div className="spinner" style={{display:"inline-block",marginRight:8}}/>Generating…</>:"✦ Generate Questions with AI"}
+                        {aiGenLoading ? <><div className="spinner" style={{ display: "inline-block", marginRight: 8 }} />Generating…</> : "✦ Generate Questions with AI"}
                       </button>
                     </div>
                   </div>
@@ -2484,118 +2503,118 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               )}
 
               {/* ─── CREATE / EDIT QUIZ ─── */}
-              {quizView==="create" && (
+              {quizView === "create" && (
                 <>
-                  <div style={{display:"flex",gap:10,marginBottom:20}}>
-                    <button onClick={()=>setQuizView("list")} className="btn-ghost">← Back</button>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                    <button onClick={() => setQuizView("list")} className="btn-ghost">← Back</button>
                     <button onClick={saveQuiz} className="btn-success">💾 Save Quiz</button>
                   </div>
                   <div className="quiz-builder-grid">
                     <div>
                       {/* Quiz config */}
-                      <div className="panel" style={{marginBottom:14}}>
+                      <div className="panel" style={{ marginBottom: 14 }}>
                         <div className="panel-title"><span>⚙</span> Quiz Settings</div>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                          <div className="field-group" style={{gridColumn:"span 2",marginBottom:0}}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                          <div className="field-group" style={{ gridColumn: "span 2", marginBottom: 0 }}>
                             <label className="field-label">Quiz Title *</label>
-                            <input className="field-input" placeholder="e.g. Chapter 4 Mid-Term Quiz" value={qTitle} onChange={e=>setQTitle(e.target.value)}/>
+                            <input className="field-input" placeholder="e.g. Chapter 4 Mid-Term Quiz" value={qTitle} onChange={e => setQTitle(e.target.value)} />
                           </div>
-                          <div className="field-group" style={{marginBottom:0}}>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
                             <label className="field-label">Subject</label>
-                            <input className="field-input" placeholder="Physics, Maths…" value={qSubject} onChange={e=>setQSubject(e.target.value)}/>
+                            <input className="field-input" placeholder="Physics, Maths…" value={qSubject} onChange={e => setQSubject(e.target.value)} />
                           </div>
-                          <div className="field-group" style={{marginBottom:0}}>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
                             <label className="field-label">Grade</label>
-                            <select className="field-input" value={qGrade} onChange={e=>setQGrade(e.target.value)} style={{cursor:"pointer"}}>
-                              {[...GRADE_GROUPS[0].opts,...GRADE_GROUPS[1].opts].map(g=><option key={g}>{g}</option>)}
+                            <select className="field-input" value={qGrade} onChange={e => setQGrade(e.target.value)} style={{ cursor: "pointer" }}>
+                              {[...GRADE_GROUPS[0].opts, ...GRADE_GROUPS[1].opts].map(g => <option key={g}>{g}</option>)}
                             </select>
                           </div>
-                          <div className="field-group" style={{marginBottom:0}}>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
                             <label className="field-label">Duration (minutes)</label>
-                            <input className="field-input" type="number" min="5" max="180" value={qDuration} onChange={e=>setQDuration(Number(e.target.value))}/>
+                            <input className="field-input" type="number" min="5" max="180" value={qDuration} onChange={e => setQDuration(Number(e.target.value))} />
                           </div>
-                          <div className="field-group" style={{marginBottom:0}}>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
                             <label className="field-label">Pass Mark (%)</label>
-                            <input className="field-input" type="number" min="1" max="100" value={qPassMark} onChange={e=>setQPassMark(Number(e.target.value))}/>
+                            <input className="field-input" type="number" min="1" max="100" value={qPassMark} onChange={e => setQPassMark(Number(e.target.value))} />
                           </div>
                         </div>
                       </div>
 
                       {/* Questions */}
-                      <div className="panel-title" style={{paddingLeft:4,marginBottom:12}}><span>❓</span> Questions ({questions.length})</div>
-                      {questions.map((q,qi) => (
+                      <div className="panel-title" style={{ paddingLeft: 4, marginBottom: 12 }}><span>❓</span> Questions ({questions.length})</div>
+                      {questions.map((q, qi) => (
                         <div key={qi} className="q-card">
-                          <div style={{display:"flex",gap:12,marginBottom:12,alignItems:"flex-start"}}>
-                            <div className="q-card-num">{qi+1}</div>
-                            <div style={{flex:1}}>
+                          <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
+                            <div className="q-card-num">{qi + 1}</div>
+                            <div style={{ flex: 1 }}>
                               <textarea
                                 className="field-input"
                                 rows={2}
                                 placeholder="Enter question text…"
                                 value={q.text}
-                                onChange={e=>updateQuestion(qi,"text",e.target.value)}
-                                style={{resize:"none",marginBottom:8}}
+                                onChange={e => updateQuestion(qi, "text", e.target.value)}
+                                style={{ resize: "none", marginBottom: 8 }}
                               />
-                              <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
-                                <label style={{fontSize:10,color:"var(--muted)",fontWeight:600,letterSpacing:1}}>MARKS</label>
-                                <input type="number" min="1" max="10" value={q.marks} onChange={e=>updateQuestion(qi,"marks",Number(e.target.value))}
-                                  className="field-input" style={{width:70,padding:"5px 10px",fontSize:12}}/>
-                                <span style={{fontSize:11,color:"var(--muted)"}}>· Mark correct option:</span>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                                <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, letterSpacing: 1 }}>MARKS</label>
+                                <input type="number" min="1" max="10" value={q.marks} onChange={e => updateQuestion(qi, "marks", Number(e.target.value))}
+                                  className="field-input" style={{ width: 70, padding: "5px 10px", fontSize: 12 }} />
+                                <span style={{ fontSize: 11, color: "var(--muted)" }}>· Mark correct option:</span>
                               </div>
-                              {q.options.map((opt:string,oi:number) => (
+                              {q.options.map((opt: string, oi: number) => (
                                 <div key={oi} className="q-option-row">
-                                  <div onClick={()=>updateQuestion(qi,"correct",oi)} className={`q-option-radio ${q.correct===oi?"correct":""}`}
-                                    style={{cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                                    {q.correct===oi && <div style={{width:8,height:8,borderRadius:"50%",background:"var(--accent3)"}}/>}
+                                  <div onClick={() => updateQuestion(qi, "correct", oi)} className={`q-option-radio ${q.correct === oi ? "correct" : ""}`}
+                                    style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    {q.correct === oi && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent3)" }} />}
                                   </div>
                                   <input
                                     className="field-input"
-                                    style={{flex:1,padding:"7px 12px",fontSize:12.5}}
-                                    placeholder={`Option ${String.fromCharCode(65+oi)}`}
+                                    style={{ flex: 1, padding: "7px 12px", fontSize: 12.5 }}
+                                    placeholder={`Option ${String.fromCharCode(65 + oi)}`}
                                     value={opt}
-                                    onChange={e=>updateOption(qi,oi,e.target.value)}
+                                    onChange={e => updateOption(qi, oi, e.target.value)}
                                   />
                                 </div>
                               ))}
                             </div>
-                            <button onClick={()=>removeQuestion(qi)} className="btn-danger btn-sm" style={{padding:"4px 10px",fontSize:11,flexShrink:0}}>✕</button>
+                            <button onClick={() => removeQuestion(qi)} className="btn-danger btn-sm" style={{ padding: "4px 10px", fontSize: 11, flexShrink: 0 }}>✕</button>
                           </div>
                         </div>
                       ))}
-                      <button onClick={addQuestion} className="btn-ghost" style={{width:"100%",padding:"12px",textAlign:"center" as const,borderStyle:"dashed"}}>
+                      <button onClick={addQuestion} className="btn-ghost" style={{ width: "100%", padding: "12px", textAlign: "center" as const, borderStyle: "dashed" }}>
                         + Add Question
                       </button>
                     </div>
 
                     {/* Sidebar summary */}
                     <div>
-                      <div className="panel" style={{position:"sticky",top:20}}>
+                      <div className="panel" style={{ position: "sticky", top: 20 }}>
                         <div className="panel-title"><span>📊</span> Quiz Summary</div>
-                        <div style={{display:"flex",flexDirection:"column" as const,gap:10}}>
-                          <div style={{background:"var(--surface2)",borderRadius:"var(--radius-sm)",padding:"14px 16px",border:"1px solid var(--border)"}}>
-                            <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginBottom:6}}>TOTAL QUESTIONS</div>
-                            <div style={{fontSize:32,fontFamily:"var(--font-serif)",color:"var(--accent)"}}>{questions.length}</div>
+                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                          <div style={{ background: "var(--surface2)", borderRadius: "var(--radius-sm)", padding: "14px 16px", border: "1px solid var(--border)" }}>
+                            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginBottom: 6 }}>TOTAL QUESTIONS</div>
+                            <div style={{ fontSize: 32, fontFamily: "var(--font-serif)", color: "var(--accent)" }}>{questions.length}</div>
                           </div>
-                          <div style={{background:"var(--surface2)",borderRadius:"var(--radius-sm)",padding:"14px 16px",border:"1px solid var(--border)"}}>
-                            <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginBottom:6}}>TOTAL MARKS</div>
-                            <div style={{fontSize:32,fontFamily:"var(--font-serif)",color:"var(--accent3)"}}>{questions.reduce((a,q)=>a+q.marks,0)}</div>
+                          <div style={{ background: "var(--surface2)", borderRadius: "var(--radius-sm)", padding: "14px 16px", border: "1px solid var(--border)" }}>
+                            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginBottom: 6 }}>TOTAL MARKS</div>
+                            <div style={{ fontSize: 32, fontFamily: "var(--font-serif)", color: "var(--accent3)" }}>{questions.reduce((a, q) => a + q.marks, 0)}</div>
                           </div>
-                          <div style={{background:"var(--surface2)",borderRadius:"var(--radius-sm)",padding:"14px 16px",border:"1px solid var(--border)"}}>
-                            <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginBottom:6}}>DURATION</div>
-                            <div style={{fontSize:32,fontFamily:"var(--font-serif)",color:"var(--gold)"}}>{qDuration}<span style={{fontSize:16,color:"var(--muted)",fontFamily:"var(--font-sans)"}}>m</span></div>
+                          <div style={{ background: "var(--surface2)", borderRadius: "var(--radius-sm)", padding: "14px 16px", border: "1px solid var(--border)" }}>
+                            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginBottom: 6 }}>DURATION</div>
+                            <div style={{ fontSize: 32, fontFamily: "var(--font-serif)", color: "var(--gold)" }}>{qDuration}<span style={{ fontSize: 16, color: "var(--muted)", fontFamily: "var(--font-sans)" }}>m</span></div>
                           </div>
                         </div>
-                        <div style={{marginTop:16,background:"rgba(0,219,160,0.05)",border:"1px solid rgba(0,219,160,0.18)",borderRadius:"var(--radius-sm)",padding:"12px 14px"}}>
-                          <div style={{fontSize:9.5,fontWeight:700,color:"var(--accent3)",letterSpacing:1.5,marginBottom:7}}>🔒 PROCTORING ACTIVE</div>
-                          <div style={{fontSize:11.5,color:"var(--text2)",lineHeight:1.8,fontWeight:300}}>
-                            ✓ Face detection<br/>
-                            ✓ Tab switch monitoring<br/>
-                            ✓ Auto-terminate on 3 violations<br/>
-                            ✓ Full violation log<br/>
+                        <div style={{ marginTop: 16, background: "rgba(0,219,160,0.05)", border: "1px solid rgba(0,219,160,0.18)", borderRadius: "var(--radius-sm)", padding: "12px 14px" }}>
+                          <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--accent3)", letterSpacing: 1.5, marginBottom: 7 }}>🔒 PROCTORING ACTIVE</div>
+                          <div style={{ fontSize: 11.5, color: "var(--text2)", lineHeight: 1.8, fontWeight: 300 }}>
+                            ✓ Face detection<br />
+                            ✓ Tab switch monitoring<br />
+                            ✓ Auto-terminate on 3 violations<br />
+                            ✓ Full violation log<br />
                             ✓ Screen activity tracking
                           </div>
                         </div>
-                        <button onClick={saveQuiz} className="btn-success" style={{width:"100%",marginTop:14}}>💾 Save Quiz</button>
+                        <button onClick={saveQuiz} className="btn-success" style={{ width: "100%", marginTop: 14 }}>💾 Save Quiz</button>
                       </div>
                     </div>
                   </div>
@@ -2603,32 +2622,32 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               )}
 
               {/* ─── LIVE SESSION ─── */}
-              {quizView==="session" && activeSession && activeQuiz && (
+              {quizView === "session" && activeSession && activeQuiz && (
                 <>
-                  <div style={{display:"flex",gap:10,marginBottom:20,alignItems:"center"}}>
-                    <div style={{width:10,height:10,borderRadius:"50%",background:"var(--accent3)",boxShadow:"0 0 8px rgba(0,219,160,0.6)",animation:"livePulse 2s infinite"}}/>
-                    <span style={{fontSize:13,color:"var(--accent3)",fontWeight:500}}>Live Session</span>
-                    <div style={{flex:1}}/>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 20, alignItems: "center" }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--accent3)", boxShadow: "0 0 8px rgba(0,219,160,0.6)", animation: "livePulse 2s infinite" }} />
+                    <span style={{ fontSize: 13, color: "var(--accent3)", fontWeight: 500 }}>Live Session</span>
+                    <div style={{ flex: 1 }} />
                     <button onClick={endSession} className="btn-danger btn-sm">⏹ End Session</button>
                   </div>
 
                   {/* Session info */}
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
                     <div className="stat-card">
                       <div className="stat-label">Quiz</div>
-                      <div style={{fontSize:16,fontWeight:600,color:"var(--text)",marginTop:4}}>{activeQuiz.title}</div>
+                      <div style={{ fontSize: 16, fontWeight: 600, color: "var(--text)", marginTop: 4 }}>{activeQuiz.title}</div>
                       <div className="stat-sub">{activeQuiz.questions.length} questions · {activeQuiz.duration} min</div>
                     </div>
                     <div className="stat-card">
                       <div className="stat-label">Submissions</div>
-                      <div className="stat-value stat-accent">{activeSession.results?.length||0}</div>
-                      <div className="stat-sub">{(activeSession.results||[]).filter((r:any)=>!r.terminated).length} completed · {(activeSession.results||[]).filter((r:any)=>r.terminated).length} terminated</div>
+                      <div className="stat-value stat-accent">{activeSession.results?.length || 0}</div>
+                      <div className="stat-sub">{(activeSession.results || []).filter((r: any) => !r.terminated).length} completed · {(activeSession.results || []).filter((r: any) => r.terminated).length} terminated</div>
                     </div>
                     <div className="stat-card">
                       <div className="stat-label">Avg Score</div>
                       <div className="stat-value stat-accent3">
-                        {(activeSession.results||[]).length > 0
-                          ? Math.round((activeSession.results||[]).filter((r:any)=>!r.terminated).reduce((a:number,r:any)=>a+r.percentage,0)/Math.max(1,(activeSession.results||[]).filter((r:any)=>!r.terminated).length))
+                        {(activeSession.results || []).length > 0
+                          ? Math.round((activeSession.results || []).filter((r: any) => !r.terminated).reduce((a: number, r: any) => a + r.percentage, 0) / Math.max(1, (activeSession.results || []).filter((r: any) => !r.terminated).length))
                           : 0}%
                       </div>
                       <div className="stat-sub">Among completed</div>
@@ -2638,98 +2657,100 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   {/* Student Takes Test */}
                   <div className="panel">
                     <div className="panel-title"><span>🎯</span> Take Test (Student View)</div>
-                    <div style={{background:"rgba(255,204,92,0.04)",border:"1px solid rgba(255,204,92,0.18)",borderRadius:"var(--radius-sm)",padding:"14px 18px",marginBottom:18}}>
-                      <div style={{fontSize:11,fontWeight:700,color:"var(--gold)",letterSpacing:1.5,marginBottom:6}}>⚠ PROCTORING NOTICE</div>
-                      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.7,fontWeight:300}}>
+                    <div style={{ background: "rgba(255,204,92,0.04)", border: "1px solid rgba(255,204,92,0.18)", borderRadius: "var(--radius-sm)", padding: "14px 18px", marginBottom: 18 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold)", letterSpacing: 1.5, marginBottom: 6 }}>⚠ PROCTORING NOTICE</div>
+                      <div style={{ fontSize: 12.5, color: "var(--text2)", lineHeight: 1.7, fontWeight: 300 }}>
                         When you click "Start Proctored Test", the camera will activate and monitoring will begin. The test will automatically close if:
                         (1) you switch tabs or windows 3+ times, or (2) your face is absent from camera for extended periods.
                         All activity is logged and reported to the teacher.
                       </div>
                     </div>
-                    <button onClick={()=>{setShowResultScreen(false);setLastQuizResult(null);startStudentTest();}} className="eval-cta-btn" style={{fontSize:14}}>
+                    <button onClick={() => { setShowResultScreen(false); setLastQuizResult(null); startStudentTest(); }} className="eval-cta-btn" style={{ fontSize: 14 }}>
                       🔒 Start Proctored Test
                     </button>
                   </div>
 
                   {/* ✅ Instant result screen shown to student after test */}
                   {showResultScreen && lastQuizResult && (
-                    <div className="panel" style={{border:"1px solid rgba(124,111,255,0.25)",background:"linear-gradient(135deg,rgba(124,111,255,0.06),rgba(0,219,160,0.04))"}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
-                        <div className="panel-title" style={{marginBottom:0}}><span>🎉</span> Test Result</div>
-                        <button onClick={()=>setShowResultScreen(false)} className="btn-ghost btn-sm">Dismiss</button>
+                    <div className="panel" style={{ border: "1px solid rgba(124,111,255,0.25)", background: "linear-gradient(135deg,rgba(124,111,255,0.06),rgba(0,219,160,0.04))" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                        <div className="panel-title" style={{ marginBottom: 0 }}><span>🎉</span> Test Result</div>
+                        <button onClick={() => setShowResultScreen(false)} className="btn-ghost btn-sm">Dismiss</button>
                       </div>
                       {lastQuizResult.terminated ? (
-                        <div style={{textAlign:"center",padding:"24px 0"}}>
-                          <div style={{fontSize:48,marginBottom:12}}>🚫</div>
-                          <div style={{fontFamily:"var(--font-serif)",fontSize:22,color:"var(--accent2)",marginBottom:8}}>Test Terminated</div>
-                          <div style={{fontSize:13,color:"var(--muted)",fontWeight:300}}>Proctoring violations exceeded the allowed limit. Result has been logged.</div>
+                        <div style={{ textAlign: "center", padding: "24px 0" }}>
+                          <div style={{ fontSize: 48, marginBottom: 12 }}>🚫</div>
+                          <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "var(--accent2)", marginBottom: 8 }}>Test Terminated</div>
+                          <div style={{ fontSize: 13, color: "var(--muted)", fontWeight: 300 }}>Proctoring violations exceeded the allowed limit. Result has been logged.</div>
                         </div>
                       ) : (
                         <>
                           {/* ─── Marks earned calculation ─── */}
                           {(() => {
                             const marksEarned = activeQuiz?.questions
-                              ? activeQuiz.questions.filter((_:any,qi:number)=>lastQuizResult.answers?.[qi]===activeQuiz.questions[qi].correct).reduce((a:number,q:any)=>a+q.marks,0)
+                              ? activeQuiz.questions.filter((_: any, qi: number) => lastQuizResult.answers?.[qi] === activeQuiz.questions[qi].correct).reduce((a: number, q: any) => a + q.marks, 0)
                               : lastQuizResult.correct;
                             const totalMarks = activeQuiz?.totalMarks || lastQuizResult.total;
                             return (
-                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:20}}>
-                                <div style={{textAlign:"center",background:"var(--surface2)",border:"1px solid rgba(124,111,255,0.2)",borderRadius:"var(--radius)",padding:"16px 10px"}}>
-                                  <div style={{fontFamily:"var(--font-serif)",fontSize:36,color:"var(--accent)",lineHeight:1}}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 20 }}>
+                                <div style={{ textAlign: "center", background: "var(--surface2)", border: "1px solid rgba(124,111,255,0.2)", borderRadius: "var(--radius)", padding: "16px 10px" }}>
+                                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 36, color: "var(--accent)", lineHeight: 1 }}>
                                     {marksEarned}
-                                    <span style={{fontSize:16,color:"var(--muted)",fontFamily:"var(--font-sans)"}}>/{totalMarks}</span>
+                                    <span style={{ fontSize: 16, color: "var(--muted)", fontFamily: "var(--font-sans)" }}>/{totalMarks}</span>
                                   </div>
-                                  <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginTop:6}}>MARKS</div>
+                                  <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginTop: 6 }}>MARKS</div>
                                 </div>
-                                <div style={{textAlign:"center",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--radius)",padding:"16px 10px"}}>
-                                  <div style={{fontFamily:"var(--font-serif)",fontSize:36,color:lastQuizResult.percentage>=75?"var(--accent3)":lastQuizResult.percentage>=50?"var(--gold)":"var(--accent2)",lineHeight:1}}>{lastQuizResult.percentage}%</div>
-                                  <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginTop:6}}>PERCENTAGE</div>
+                                <div style={{ textAlign: "center", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "16px 10px" }}>
+                                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 36, color: lastQuizResult.percentage >= 75 ? "var(--accent3)" : lastQuizResult.percentage >= 50 ? "var(--gold)" : "var(--accent2)", lineHeight: 1 }}>{lastQuizResult.percentage}%</div>
+                                  <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginTop: 6 }}>PERCENTAGE</div>
                                 </div>
-                                <div style={{textAlign:"center",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--radius)",padding:"16px 10px"}}>
-                                  <div style={{fontFamily:"var(--font-serif)",fontSize:36,color:"var(--accent3)",lineHeight:1}}>{lastQuizResult.correct}/{lastQuizResult.total}</div>
-                                  <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginTop:6}}>CORRECT</div>
+                                <div style={{ textAlign: "center", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "16px 10px" }}>
+                                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 36, color: "var(--accent3)", lineHeight: 1 }}>{lastQuizResult.correct}/{lastQuizResult.total}</div>
+                                  <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginTop: 6 }}>CORRECT</div>
                                 </div>
-                                <div style={{textAlign:"center",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--radius)",padding:"16px 10px"}}>
-                                  <div style={{fontFamily:"var(--font-serif)",fontSize:36,color:["A+","A"].includes(lastQuizResult.grade)?"var(--accent3)":["B","C"].includes(lastQuizResult.grade)?"var(--gold)":"var(--accent2)",lineHeight:1}}>{lastQuizResult.grade}</div>
-                                  <div style={{fontSize:9,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginTop:6}}>GRADE</div>
+                                <div style={{ textAlign: "center", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "16px 10px" }}>
+                                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 36, color: ["A+", "A"].includes(lastQuizResult.grade) ? "var(--accent3)" : ["B", "C"].includes(lastQuizResult.grade) ? "var(--gold)" : "var(--accent2)", lineHeight: 1 }}>{lastQuizResult.grade}</div>
+                                  <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginTop: 6 }}>GRADE</div>
                                 </div>
                               </div>
                             );
                           })()}
-                          <div style={{textAlign:"center",padding:"14px",background:lastQuizResult.passed?"rgba(0,219,160,0.07)":"rgba(255,95,160,0.07)",border:`1px solid ${lastQuizResult.passed?"rgba(0,219,160,0.25)":"rgba(255,95,160,0.25)"}`,borderRadius:"var(--radius-sm)"}}>
-                            <span style={{fontSize:15,fontWeight:600,color:lastQuizResult.passed?"var(--accent3)":"var(--accent2)"}}>
-                              {lastQuizResult.passed?"✓ PASSED — Well done!":"✗ FAILED — Keep practising!"}
+                          <div style={{ textAlign: "center", padding: "14px", background: lastQuizResult.passed ? "rgba(0,219,160,0.07)" : "rgba(255,95,160,0.07)", border: `1px solid ${lastQuizResult.passed ? "rgba(0,219,160,0.25)" : "rgba(255,95,160,0.25)"}`, borderRadius: "var(--radius-sm)" }}>
+                            <span style={{ fontSize: 15, fontWeight: 600, color: lastQuizResult.passed ? "var(--accent3)" : "var(--accent2)" }}>
+                              {lastQuizResult.passed ? "✓ PASSED — Well done!" : "✗ FAILED — Keep practising!"}
                             </span>
                           </div>
                           {/* Per-question review */}
                           {activeQuiz.questions && (
-                            <div style={{marginTop:18}}>
-                              <div style={{fontSize:9.5,fontWeight:700,color:"var(--muted)",letterSpacing:2,marginBottom:10}}>ANSWER REVIEW</div>
-                              {activeQuiz.questions.map((q:any, qi:number) => {
+                            <div style={{ marginTop: 18 }}>
+                              <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--muted)", letterSpacing: 2, marginBottom: 10 }}>ANSWER REVIEW</div>
+                              {activeQuiz.questions.map((q: any, qi: number) => {
                                 const studentAns = lastQuizResult.answers?.[qi];
                                 const isCorrect = studentAns === q.correct;
                                 const notAnswered = studentAns === undefined;
                                 return (
-                                  <div key={qi} style={{background:isCorrect?"rgba(0,219,160,0.04)":notAnswered?"rgba(255,255,255,0.02)":"rgba(255,95,160,0.04)",border:`1px solid ${isCorrect?"rgba(0,219,160,0.2)":notAnswered?"var(--border)":"rgba(255,95,160,0.2)"}`,borderRadius:"var(--radius-sm)",padding:"12px 16px",marginBottom:8}}>
-                                    <div style={{display:"flex",gap:10,alignItems:"flex-start",marginBottom:8}}>
-                                      <span style={{fontSize:18,flexShrink:0}}>{isCorrect?"✅":notAnswered?"⬜":"❌"}</span>
-                                      <div style={{flex:1}}>
-                                        <div style={{fontSize:13,fontWeight:500,color:"var(--text)",marginBottom:6}}>{qi+1}. {q.text}</div>
-                                        <div style={{display:"flex",flexDirection:"column" as const,gap:3}}>
-                                          {q.options.map((opt:string, oi:number) => {
-                                            const isStudentPick = studentAns===oi;
-                                            const isCorrectOpt = q.correct===oi;
+                                  <div key={qi} style={{ background: isCorrect ? "rgba(0,219,160,0.04)" : notAnswered ? "rgba(255,255,255,0.02)" : "rgba(255,95,160,0.04)", border: `1px solid ${isCorrect ? "rgba(0,219,160,0.2)" : notAnswered ? "var(--border)" : "rgba(255,95,160,0.2)"}`, borderRadius: "var(--radius-sm)", padding: "12px 16px", marginBottom: 8 }}>
+                                    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+                                      <span style={{ fontSize: 18, flexShrink: 0 }}>{isCorrect ? "✅" : notAnswered ? "⬜" : "❌"}</span>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)", marginBottom: 6 }}>{qi + 1}. {q.text}</div>
+                                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 3 }}>
+                                          {q.options.map((opt: string, oi: number) => {
+                                            const isStudentPick = studentAns === oi;
+                                            const isCorrectOpt = q.correct === oi;
                                             return (
-                                              <div key={oi} style={{fontSize:12,padding:"4px 10px",borderRadius:5,fontWeight:300,
-                                                background:isCorrectOpt?"rgba(0,219,160,0.1)":isStudentPick&&!isCorrectOpt?"rgba(255,95,160,0.08)":"transparent",
-                                                color:isCorrectOpt?"var(--accent3)":isStudentPick&&!isCorrectOpt?"var(--accent2)":"var(--text2)",
-                                                border:isCorrectOpt?"1px solid rgba(0,219,160,0.2)":isStudentPick&&!isCorrectOpt?"1px solid rgba(255,95,160,0.2)":"1px solid transparent"}}>
-                                                {isCorrectOpt?"✓ ":isStudentPick&&!isCorrectOpt?"✗ ":String.fromCharCode(65+oi)+". "}{opt}
+                                              <div key={oi} style={{
+                                                fontSize: 12, padding: "4px 10px", borderRadius: 5, fontWeight: 300,
+                                                background: isCorrectOpt ? "rgba(0,219,160,0.1)" : isStudentPick && !isCorrectOpt ? "rgba(255,95,160,0.08)" : "transparent",
+                                                color: isCorrectOpt ? "var(--accent3)" : isStudentPick && !isCorrectOpt ? "var(--accent2)" : "var(--text2)",
+                                                border: isCorrectOpt ? "1px solid rgba(0,219,160,0.2)" : isStudentPick && !isCorrectOpt ? "1px solid rgba(255,95,160,0.2)" : "1px solid transparent"
+                                              }}>
+                                                {isCorrectOpt ? "✓ " : isStudentPick && !isCorrectOpt ? "✗ " : String.fromCharCode(65 + oi) + ". "}{opt}
                                               </div>
                                             );
                                           })}
                                         </div>
-                                        {q.explanation && <div style={{fontSize:11.5,color:"var(--muted)",marginTop:7,fontStyle:"italic",fontWeight:300}}>💡 {q.explanation}</div>}
+                                        {q.explanation && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 7, fontStyle: "italic", fontWeight: 300 }}>💡 {q.explanation}</div>}
                                       </div>
                                     </div>
                                   </div>
@@ -2743,52 +2764,52 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                   )}
 
                   {/* Results */}
-                  {(activeSession.results||[]).length > 0 && (
+                  {(activeSession.results || []).length > 0 && (
                     <div className="panel">
                       <div className="panel-title"><span>📋</span> Submissions Received</div>
-                      {(activeSession.results||[]).map((result:any, i:number) => (
+                      {(activeSession.results || []).map((result: any, i: number) => (
                         <div key={i} className="quiz-result-row">
                           {result.terminated ? (
-                            <div style={{width:32,height:32,borderRadius:"50%",background:"rgba(255,95,160,0.1)",border:"1px solid rgba(255,95,160,0.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>🚫</div>
+                            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(255,95,160,0.1)", border: "1px solid rgba(255,95,160,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>🚫</div>
                           ) : (
-                            <div style={{width:32,height:32,borderRadius:"50%",background:"rgba(0,219,160,0.1)",border:"1px solid rgba(0,219,160,0.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>✅</div>
+                            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(0,219,160,0.1)", border: "1px solid rgba(0,219,160,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>✅</div>
                           )}
-                          <div style={{flex:1}}>
-                            <div style={{fontSize:13,fontWeight:500,color:result.terminated?"var(--accent2)":"var(--text)"}}>
-                              {result.terminated ? "🚫 Test Terminated (Cheating Detected)" : `✅ Submission ${i+1}`}
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 500, color: result.terminated ? "var(--accent2)" : "var(--text)" }}>
+                              {result.terminated ? "🚫 Test Terminated (Cheating Detected)" : `✅ Submission ${i + 1}`}
                             </div>
-                            <div style={{fontSize:11.5,color:"var(--muted)",marginTop:3,lineHeight:1.7}}>
+                            <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 3, lineHeight: 1.7 }}>
                               {result.terminated
                                 ? <>
-                                    Tab / face violations exceeded limit
-                                    {result.logs && <span style={{color:"var(--accent2)",marginLeft:6}}>· {result.logs.filter((l:any)=>l.type!=="ok").length} violations logged</span>}
-                                  </>
+                                  Tab / face violations exceeded limit
+                                  {result.logs && <span style={{ color: "var(--accent2)", marginLeft: 6 }}>· {result.logs.filter((l: any) => l.type !== "ok").length} violations logged</span>}
+                                </>
                                 : <>
-                                    <span style={{color:"var(--accent3)",fontWeight:500}}>{result.correct}/{result.total} correct</span>
-                                    <span style={{margin:"0 6px",opacity:0.4}}>·</span>
-                                    {/* Show actual marks earned out of total */}
-                                    <span style={{color:"var(--accent)",fontWeight:500}}>
-                                      {activeQuiz?.questions
-                                        ? `${activeQuiz.questions.filter((_:any,qi:number)=>result.answers?.[qi]===activeQuiz.questions[qi].correct).reduce((a:number,q:any)=>a+q.marks,0)} / ${activeQuiz.totalMarks} marks`
-                                        : `${result.percentage}%`}
-                                    </span>
-                                    <span style={{margin:"0 6px",opacity:0.4}}>·</span>
-                                    <span>{result.percentage}%</span>
-                                    {result.logs && <span style={{margin:"0 6px",opacity:0.4}}>·</span>}
-                                    {result.logs && <span style={{color:"var(--muted)"}}>{result.logs.filter((l:any)=>l.type!=="ok").length} violation{result.logs.filter((l:any)=>l.type!=="ok").length!==1?"s":""}</span>}
-                                  </>
+                                  <span style={{ color: "var(--accent3)", fontWeight: 500 }}>{result.correct}/{result.total} correct</span>
+                                  <span style={{ margin: "0 6px", opacity: 0.4 }}>·</span>
+                                  {/* Show actual marks earned out of total */}
+                                  <span style={{ color: "var(--accent)", fontWeight: 500 }}>
+                                    {activeQuiz?.questions
+                                      ? `${activeQuiz.questions.filter((_: any, qi: number) => result.answers?.[qi] === activeQuiz.questions[qi].correct).reduce((a: number, q: any) => a + q.marks, 0)} / ${activeQuiz.totalMarks} marks`
+                                      : `${result.percentage}%`}
+                                  </span>
+                                  <span style={{ margin: "0 6px", opacity: 0.4 }}>·</span>
+                                  <span>{result.percentage}%</span>
+                                  {result.logs && <span style={{ margin: "0 6px", opacity: 0.4 }}>·</span>}
+                                  {result.logs && <span style={{ color: "var(--muted)" }}>{result.logs.filter((l: any) => l.type !== "ok").length} violation{result.logs.filter((l: any) => l.type !== "ok").length !== 1 ? "s" : ""}</span>}
+                                </>
                               }
                             </div>
                           </div>
                           {!result.terminated && (
-                            <div style={{textAlign:"right" as const,flexShrink:0}}>
-                              <div style={{fontFamily:"var(--font-serif)",fontSize:24,color:result.percentage>=75?"var(--accent3)":result.percentage>=50?"var(--gold)":"var(--accent2)",lineHeight:1}}>
+                            <div style={{ textAlign: "right" as const, flexShrink: 0 }}>
+                              <div style={{ fontFamily: "var(--font-serif)", fontSize: 24, color: result.percentage >= 75 ? "var(--accent3)" : result.percentage >= 50 ? "var(--gold)" : "var(--accent2)", lineHeight: 1 }}>
                                 {activeQuiz?.questions
-                                  ? `${activeQuiz.questions.filter((_:any,qi:number)=>result.answers?.[qi]===activeQuiz.questions[qi].correct).reduce((a:number,q:any)=>a+q.marks,0)}/${activeQuiz.totalMarks}`
+                                  ? `${activeQuiz.questions.filter((_: any, qi: number) => result.answers?.[qi] === activeQuiz.questions[qi].correct).reduce((a: number, q: any) => a + q.marks, 0)}/${activeQuiz.totalMarks}`
                                   : `${result.correct}/${result.total}`}
                               </div>
-                              <div style={{fontSize:9,color:"var(--muted)",fontWeight:600,letterSpacing:1,marginTop:2}}>MARKS</div>
-                              <div style={{fontSize:11,color:result.passed?"var(--accent3)":"var(--accent2)",fontWeight:600,marginTop:4}}>{result.passed?"✓ PASS":"✗ FAIL"}</div>
+                              <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, letterSpacing: 1, marginTop: 2 }}>MARKS</div>
+                              <div style={{ fontSize: 11, color: result.passed ? "var(--accent3)" : "var(--accent2)", fontWeight: 600, marginTop: 4 }}>{result.passed ? "✓ PASS" : "✗ FAIL"}</div>
                             </div>
                           )}
                         </div>
@@ -2801,7 +2822,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ LESSON PLANNER ═══ */}
-          {page==="lesson" && (
+          {page === "lesson" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Lesson Planner</h1>
@@ -2812,29 +2833,29 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 <div className="field-group">
                   <label className="field-label">Topic *</label>
                   <input className="field-input" placeholder="e.g. Photosynthesis, Quadratic Equations, French Revolution…"
-                    value={lessonTopic} onChange={e=>setLessonTopic(e.target.value)} onKeyDown={e=>e.key==="Enter"&&generateLesson()}/>
+                    value={lessonTopic} onChange={e => setLessonTopic(e.target.value)} onKeyDown={e => e.key === "Enter" && generateLesson()} />
                 </div>
                 <div className="lesson-config">
-                  <div className="field-group" style={{marginBottom:0}}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Grade / Class</label>
-                    <select className="field-input" value={lessonGrade} onChange={e=>setLessonGrade(e.target.value)} style={{cursor:"pointer"}}>
-                      {[...GRADE_GROUPS[0].opts,...GRADE_GROUPS[1].opts,"College Level"].map(g=><option key={g}>{g}</option>)}
+                    <select className="field-input" value={lessonGrade} onChange={e => setLessonGrade(e.target.value)} style={{ cursor: "pointer" }}>
+                      {[...GRADE_GROUPS[0].opts, ...GRADE_GROUPS[1].opts, "College Level"].map(g => <option key={g}>{g}</option>)}
                     </select>
                   </div>
-                  <div className="field-group" style={{marginBottom:0}}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Duration</label>
-                    <select className="field-input" value={lessonDuration} onChange={e=>setLessonDuration(e.target.value)} style={{cursor:"pointer"}}>
-                      {["30 minutes","45 minutes","60 minutes","90 minutes"].map(d=><option key={d}>{d}</option>)}
+                    <select className="field-input" value={lessonDuration} onChange={e => setLessonDuration(e.target.value)} style={{ cursor: "pointer" }}>
+                      {["30 minutes", "45 minutes", "60 minutes", "90 minutes"].map(d => <option key={d}>{d}</option>)}
                     </select>
                   </div>
                 </div>
                 <div className="field-group">
                   <label className="field-label">Additional Context (optional)</label>
                   <input className="field-input" placeholder="e.g. focus on experiments, visual learners, CBSE board…"
-                    value={lessonContext} onChange={e=>setLessonContext(e.target.value)}/>
+                    value={lessonContext} onChange={e => setLessonContext(e.target.value)} />
                 </div>
                 <button onClick={generateLesson} className="btn-primary" disabled={loading}>
-                  {loading?"Generating…":"✧ Generate Lesson Plan"}
+                  {loading ? "Generating…" : "✧ Generate Lesson Plan"}
                 </button>
               </div>
               {lessonSections.length > 0 && (
@@ -2845,7 +2866,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                     <div className="lesson-meta-item">⏱ {lessonDuration}</div>
                     <div className="lesson-meta-item">📋 {lessonSections.length} sections</div>
                   </div>
-                  {lessonSections.map((sec,i)=><LessonSection key={i} icon={sec.icon} title={sec.title} body={sec.body}/>)}
+                  {lessonSections.map((sec, i) => <LessonSection key={i} icon={sec.icon} title={sec.title} body={sec.body} />)}
                 </>
               )}
               {lessonOutput && !lessonSections.length && <div className="ai-output">{lessonOutput}</div>}
@@ -2853,7 +2874,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ STUDY TOOL ═══ */}
-          {page==="study" && (
+          {page === "study" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Study Tool</h1>
@@ -2861,17 +2882,17 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               </div>
               <div className="panel">
                 <div className="panel-title"><span>◆</span> Topic Explorer</div>
-                <div style={{display:"flex",gap:11,alignItems:"flex-end"}}>
-                  <div className="field-group" style={{flex:1,marginBottom:0}}>
+                <div style={{ display: "flex", gap: 11, alignItems: "flex-end" }}>
+                  <div className="field-group" style={{ flex: 1, marginBottom: 0 }}>
                     <label className="field-label">Enter Topic</label>
                     <input className="field-input"
                       placeholder="e.g. Photosynthesis, Newton's Laws, French Revolution, Cell Division…"
                       value={studyTopic}
-                      onChange={e=>setStudyTopic(e.target.value)}
-                      onKeyDown={e=>e.key==="Enter"&&generateStudy()}/>
+                      onChange={e => setStudyTopic(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && generateStudy()} />
                   </div>
-                  <button onClick={generateStudy} className="btn-primary" disabled={studyLoading} style={{whiteSpace:"nowrap" as const,padding:"11px 26px",height:44}}>
-                    {studyLoading?"Generating…":"◆ Deep Study"}
+                  <button onClick={generateStudy} className="btn-primary" disabled={studyLoading} style={{ whiteSpace: "nowrap" as const, padding: "11px 26px", height: 44 }}>
+                    {studyLoading ? "Generating…" : "◆ Deep Study"}
                   </button>
                 </div>
               </div>
@@ -2879,33 +2900,33 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               {studyLoading && (
                 <div className="progress-screen">
                   <div className="progress-icon">🔬</div>
-                  <div style={{fontFamily:"var(--font-serif)",fontSize:22,color:"#fff",marginBottom:8}}>Building Study Guide…</div>
-                  <div style={{fontSize:13,color:"var(--muted)",marginBottom:24,fontWeight:300}}>Generating comprehensive content for "{studyTopic}"</div>
+                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "#fff", marginBottom: 8 }}>Building Study Guide…</div>
+                  <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 24, fontWeight: 300 }}>Generating comprehensive content for "{studyTopic}"</div>
                   <div className="progress-steps">
-                    <div className="progress-step-row running"><div className="progress-step-dot"/>Generating 9 detailed sections</div>
-                    <div className="progress-step-row waiting"><div className="progress-step-dot"/>Fetching reference images</div>
-                    <div className="progress-step-row waiting"><div className="progress-step-dot"/>Formatting study guide</div>
+                    <div className="progress-step-row running"><div className="progress-step-dot" />Generating 9 detailed sections</div>
+                    <div className="progress-step-row waiting"><div className="progress-step-dot" />Fetching reference images</div>
+                    <div className="progress-step-row waiting"><div className="progress-step-dot" />Formatting study guide</div>
                   </div>
                 </div>
               )}
 
               {studyData && !studyLoading && (
                 <>
-                  <div style={{background:"linear-gradient(135deg,rgba(124,111,255,0.08),rgba(0,219,160,0.04))",border:"1px solid rgba(124,111,255,0.22)",borderRadius:20,padding:"34px 38px",marginBottom:14,position:"relative",overflow:"hidden",animation:"fadeUp 0.4s ease both"}}>
-                    <div style={{position:"absolute",top:0,right:0,width:200,height:200,background:"radial-gradient(circle,rgba(124,111,255,0.08),transparent 70%)"}}/>
-                    <div style={{fontSize:9,fontWeight:700,letterSpacing:2.5,color:"var(--accent)",textTransform:"uppercase" as const,marginBottom:13}}>◈ Definition — {studyTopic}</div>
-                    <p style={{fontSize:16,lineHeight:1.9,color:"var(--text)",fontWeight:300,maxWidth:720,position:"relative"}}>
-                      {studyData.definition || <span style={{color:"var(--muted)"}}>Definition not available — see Explanation section below.</span>}
+                  <div style={{ background: "linear-gradient(135deg,rgba(124,111,255,0.08),rgba(0,219,160,0.04))", border: "1px solid rgba(124,111,255,0.22)", borderRadius: 20, padding: "34px 38px", marginBottom: 14, position: "relative", overflow: "hidden", animation: "fadeUp 0.4s ease both" }}>
+                    <div style={{ position: "absolute", top: 0, right: 0, width: 200, height: 200, background: "radial-gradient(circle,rgba(124,111,255,0.08),transparent 70%)" }} />
+                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2.5, color: "var(--accent)", textTransform: "uppercase" as const, marginBottom: 13 }}>◈ Definition — {studyTopic}</div>
+                    <p style={{ fontSize: 16, lineHeight: 1.9, color: "var(--text)", fontWeight: 300, maxWidth: 720, position: "relative" }}>
+                      {studyData.definition || <span style={{ color: "var(--muted)" }}>Definition not available — see Explanation section below.</span>}
                     </p>
                   </div>
 
                   {studyImages.length > 0 && (
-                    <div style={{marginBottom:14}}>
-                      <div style={{fontSize:9,fontWeight:700,letterSpacing:2,color:"var(--muted)",textTransform:"uppercase" as const,marginBottom:10}}>Visual Reference</div>
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2, color: "var(--muted)", textTransform: "uppercase" as const, marginBottom: 10 }}>Visual Reference</div>
                       <div className="study-image-grid">
-                        {studyImages.map((img,i)=>(
+                        {studyImages.map((img, i) => (
                           <div key={i} className="study-image-item">
-                            <img src={img.src} alt={img.caption} onError={e=>{(e.target as HTMLImageElement).parentElement!.style.display="none";}}/>
+                            <img src={img.src} alt={img.caption} onError={e => { (e.target as HTMLImageElement).parentElement!.style.display = "none"; }} />
                             <div className="study-image-caption">{img.caption}</div>
                           </div>
                         ))}
@@ -2915,63 +2936,63 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
                   {studyData.explanation && (
                     <StudyCard icon="📖" title="Detailed Explanation" subtitle="Step-by-step breakdown">
-                      <div style={{fontSize:13.5,lineHeight:2,color:"var(--text2)",whiteSpace:"pre-wrap" as const,fontWeight:300}}>{studyData.explanation}</div>
+                      <div style={{ fontSize: 13.5, lineHeight: 2, color: "var(--text2)", whiteSpace: "pre-wrap" as const, fontWeight: 300 }}>{studyData.explanation}</div>
                     </StudyCard>
                   )}
                   {studyData.keyConcepts && (
                     <StudyCard icon="🧩" title="Key Concepts" subtitle={`Core components of ${studyTopic}`}>
                       {studyData.keyConcepts.includes("•") ? (
-                        <div style={{display:"flex",flexWrap:"wrap" as const,gap:8}}>
-                          {studyData.keyConcepts.split("\n").filter((l:string)=>l.trim().startsWith("•")).map((line:string,i:number)=>{
-                            const parts=line.replace(/^•\s*/,"").split("—");
+                        <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                          {studyData.keyConcepts.split("\n").filter((l: string) => l.trim().startsWith("•")).map((line: string, i: number) => {
+                            const parts = line.replace(/^•\s*/, "").split("—");
                             return (
-                              <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",background:"rgba(124,111,255,0.06)",border:"1px solid rgba(124,111,255,0.16)",borderRadius:9,padding:"12px 15px",flex:"1 1 300px"}}>
-                                <div style={{width:8,height:8,borderRadius:"50%",background:"var(--accent)",flexShrink:0,marginTop:7}}/>
-                                <div style={{fontSize:13.5,color:"var(--text)",fontWeight:300,lineHeight:1.75}}>
-                                  {parts[0]&&<strong style={{color:"var(--text)",fontWeight:600}}>{parts[0].trim()}</strong>}
-                                  {parts.slice(1).join("—")&&<span style={{color:"var(--text2)"}}> — {parts.slice(1).join("—").trim()}</span>}
+                              <div key={i} style={{ display: "flex", gap: 9, alignItems: "flex-start", background: "rgba(124,111,255,0.06)", border: "1px solid rgba(124,111,255,0.16)", borderRadius: 9, padding: "12px 15px", flex: "1 1 300px" }}>
+                                <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, marginTop: 7 }} />
+                                <div style={{ fontSize: 13.5, color: "var(--text)", fontWeight: 300, lineHeight: 1.75 }}>
+                                  {parts[0] && <strong style={{ color: "var(--text)", fontWeight: 600 }}>{parts[0].trim()}</strong>}
+                                  {parts.slice(1).join("—") && <span style={{ color: "var(--text2)" }}> — {parts.slice(1).join("—").trim()}</span>}
                                 </div>
                               </div>
                             );
                           })}
                         </div>
                       ) : (
-                        <div style={{fontSize:13.5,lineHeight:2,color:"var(--text2)",whiteSpace:"pre-wrap" as const,fontWeight:300}}>{studyData.keyConcepts}</div>
+                        <div style={{ fontSize: 13.5, lineHeight: 2, color: "var(--text2)", whiteSpace: "pre-wrap" as const, fontWeight: 300 }}>{studyData.keyConcepts}</div>
                       )}
                     </StudyCard>
                   )}
-                  {studyData.types && <StudyCard icon="📂" title="Types & Classifications" subtitle={`Different categories of ${studyTopic}`}><div style={{fontSize:13.5,lineHeight:2,color:"var(--text2)",whiteSpace:"pre-wrap" as const,fontWeight:300}}>{studyData.types}</div></StudyCard>}
-                  {studyData.applications && <StudyCard icon="🌍" title="Real World Applications" subtitle="Where and how this topic is used"><div style={{fontSize:13.5,lineHeight:2,color:"var(--text2)",whiteSpace:"pre-wrap" as const,fontWeight:300}}>{studyData.applications}</div></StudyCard>}
-                  {studyData.history && <StudyCard icon="📜" title="Historical Context" subtitle={`Origin and evolution of ${studyTopic}`}><div style={{fontSize:13.5,lineHeight:2,color:"var(--text2)",whiteSpace:"pre-wrap" as const,fontWeight:300}}>{studyData.history}</div></StudyCard>}
+                  {studyData.types && <StudyCard icon="📂" title="Types & Classifications" subtitle={`Different categories of ${studyTopic}`}><div style={{ fontSize: 13.5, lineHeight: 2, color: "var(--text2)", whiteSpace: "pre-wrap" as const, fontWeight: 300 }}>{studyData.types}</div></StudyCard>}
+                  {studyData.applications && <StudyCard icon="🌍" title="Real World Applications" subtitle="Where and how this topic is used"><div style={{ fontSize: 13.5, lineHeight: 2, color: "var(--text2)", whiteSpace: "pre-wrap" as const, fontWeight: 300 }}>{studyData.applications}</div></StudyCard>}
+                  {studyData.history && <StudyCard icon="📜" title="Historical Context" subtitle={`Origin and evolution of ${studyTopic}`}><div style={{ fontSize: 13.5, lineHeight: 2, color: "var(--text2)", whiteSpace: "pre-wrap" as const, fontWeight: 300 }}>{studyData.history}</div></StudyCard>}
                   {studyData.misconceptions && (
                     <StudyCard icon="⚠️" title="Common Misconceptions" subtitle="What students often get wrong">
-                      {studyData.misconceptions.split("\n").filter((l:string)=>l.trim()).map((line:string,i:number)=>(
-                        <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",padding:"12px 16px",borderRadius:"var(--radius-sm)",border:"1px solid rgba(255,95,160,0.15)",background:"rgba(255,95,160,0.03)",marginBottom:7}}>
-                          <span style={{fontSize:14,flexShrink:0,marginTop:2}}>{line.startsWith("✓")?"✓":"⚠"}</span>
-                          <p style={{fontSize:13.5,lineHeight:1.75,color:line.startsWith("✓")?"var(--accent3)":"var(--text2)",fontWeight:300}}>{line.replace(/^[⚠✓]\s*/,"")}</p>
+                      {studyData.misconceptions.split("\n").filter((l: string) => l.trim()).map((line: string, i: number) => (
+                        <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 16px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(255,95,160,0.15)", background: "rgba(255,95,160,0.03)", marginBottom: 7 }}>
+                          <span style={{ fontSize: 14, flexShrink: 0, marginTop: 2 }}>{line.startsWith("✓") ? "✓" : "⚠"}</span>
+                          <p style={{ fontSize: 13.5, lineHeight: 1.75, color: line.startsWith("✓") ? "var(--accent3)" : "var(--text2)", fontWeight: 300 }}>{line.replace(/^[⚠✓]\s*/, "")}</p>
                         </div>
                       ))}
                     </StudyCard>
                   )}
                   {studyData.examTips && (
                     <StudyCard icon="✏️" title="Exam Tips" subtitle="How to score well in exams">
-                      {studyData.examTips.split("\n").filter((l:string)=>l.trim()).map((line:string,i:number)=>{
-                        const m=line.match(/^(\d+)\.\s*(.*)/s);
+                      {studyData.examTips.split("\n").filter((l: string) => l.trim()).map((line: string, i: number) => {
+                        const m = line.match(/^(\d+)\.\s*(.*)/s);
                         return (
-                          <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",padding:"12px 16px",borderRadius:"var(--radius-sm)",border:"1px solid var(--border)",background:"rgba(0,219,160,0.03)",marginBottom:7}}>
-                            <span style={{fontSize:11,fontWeight:700,color:"var(--accent3)",background:"rgba(0,219,160,0.1)",border:"1px solid rgba(0,219,160,0.22)",borderRadius:4,padding:"2px 7px",flexShrink:0,marginTop:1,minWidth:24,textAlign:"center" as const}}>{m?m[1]:i+1}</span>
-                            <p style={{fontSize:13.5,lineHeight:1.75,color:"var(--text2)",fontWeight:300}}>{m?m[2]:line}</p>
+                          <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 16px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", background: "rgba(0,219,160,0.03)", marginBottom: 7 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent3)", background: "rgba(0,219,160,0.1)", border: "1px solid rgba(0,219,160,0.22)", borderRadius: 4, padding: "2px 7px", flexShrink: 0, marginTop: 1, minWidth: 24, textAlign: "center" as const }}>{m ? m[1] : i + 1}</span>
+                            <p style={{ fontSize: 13.5, lineHeight: 1.75, color: "var(--text2)", fontWeight: 300 }}>{m ? m[2] : line}</p>
                           </div>
                         );
                       })}
                     </StudyCard>
                   )}
-                  {studyData.funFacts?.length>0 && (
+                  {studyData.funFacts?.length > 0 && (
                     <StudyCard icon="⭐" title="Fun Facts" subtitle={`Surprising things about ${studyTopic}`}>
-                      {studyData.funFacts.map((fact:string,i:number)=>(
-                        <div key={i} style={{display:"flex",gap:14,alignItems:"flex-start",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:10,padding:"14px 18px",marginBottom:8}}>
-                          <div style={{fontFamily:"var(--font-serif)",fontSize:24,color:"var(--gold)",lineHeight:1,flexShrink:0,width:30,fontWeight:400}}>{i+1}</div>
-                          <div style={{fontSize:13.5,lineHeight:1.8,color:"var(--text)",fontWeight:300}}>{fact}</div>
+                      {studyData.funFacts.map((fact: string, i: number) => (
+                        <div key={i} style={{ display: "flex", gap: 14, alignItems: "flex-start", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 18px", marginBottom: 8 }}>
+                          <div style={{ fontFamily: "var(--font-serif)", fontSize: 24, color: "var(--gold)", lineHeight: 1, flexShrink: 0, width: 30, fontWeight: 400 }}>{i + 1}</div>
+                          <div style={{ fontSize: 13.5, lineHeight: 1.8, color: "var(--text)", fontWeight: 300 }}>{fact}</div>
                         </div>
                       ))}
                     </StudyCard>
@@ -2982,21 +3003,21 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ DOCUMENT AI — UNIFIED SCAN + EVALUATE ═══ */}
-          {page==="paper" && (
+          {page === "paper" && (
             <>
-              <div className="page-header" style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16}}>
+              <div className="page-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
                 <div>
                   <h1 className="page-title">Document AI</h1>
                   <p className="page-sub">
-                    {evalPhase==="scan" && "Upload a handwritten PDF or image — AI reads & evaluates intelligently"}
-                    {evalPhase==="action" && "✓ Scan complete — choose what to do next"}
-                    {evalPhase==="evaluate" && "Configure grading options and evaluate the paper"}
-                    {evalPhase==="progress" && "AI is working…"}
-                    {evalPhase==="done" && "Evaluation complete — review results below"}
+                    {evalPhase === "scan" && "Upload a handwritten PDF or image — AI reads & evaluates intelligently"}
+                    {evalPhase === "action" && "✓ Scan complete — fill in exam details below to evaluate"}
+                    {evalPhase === "evaluate" && "Configure grading options and evaluate the paper"}
+                    {evalPhase === "progress" && "AI is working…"}
+                    {evalPhase === "done" && "Evaluation complete — review results below"}
                   </p>
                 </div>
-                {evalPhase!=="scan" && (
-                  <button className="btn-ghost" style={{flexShrink:0,marginTop:8,fontSize:12}} onClick={()=>{
+                {evalPhase !== "scan" && (
+                  <button className="btn-ghost" style={{ flexShrink: 0, marginTop: 8, fontSize: 12 }} onClick={() => {
                     setEvalPhase("scan"); setOcrBenchFile(null); setOcrBenchResults(null);
                     setOcrPageData([]); setOcrEnhanced(""); setOcrProgress(""); setOcrMergedText("");
                     setEvalFromOcr(""); setEvaluation(null); setEvalStep("idle");
@@ -3006,52 +3027,52 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               </div>
 
               {/* ── PHASE 1: SCAN ── */}
-              {(evalPhase==="scan" || evalPhase==="action") && (
+              {(evalPhase === "scan" || evalPhase === "action") && (
                 <>
                   {/* ── OCR UPLOAD PANEL ── */}
                   <div className="panel">
                     <div className="panel-title"><span>📤</span> Upload Document</div>
-                    <div style={{display:"flex",gap:32,alignItems:"flex-start"}}>
-                      <div style={{flex:1}}>
-                        <div style={{border:"2px dashed var(--border2)",background:"rgba(255,255,255,0.02)",borderRadius:"var(--radius)",padding:32,textAlign:"center",marginBottom:16,position:"relative",cursor:"pointer",transition:"border-color 0.2s"}}
-                          onDragOver={e=>e.preventDefault()}
-                          onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files?.[0];if(f){setOcrBenchFile(f);setOcrBenchResults(null);setOcrPageData([]);setOcrEnhanced("");setOcrProgress("");setEvalPhase("scan");}}}>
-                          <div style={{fontSize:36,marginBottom:10}}>📄</div>
-                          <div style={{fontSize:14,fontWeight:600,color:"var(--text)",marginBottom:6}}>
+                    <div style={{ display: "flex", gap: 32, alignItems: "flex-start" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ border: "2px dashed var(--border2)", background: "rgba(255,255,255,0.02)", borderRadius: "var(--radius)", padding: 32, textAlign: "center", marginBottom: 16, position: "relative", cursor: "pointer", transition: "border-color 0.2s" }}
+                          onDragOver={e => e.preventDefault()}
+                          onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) { setOcrBenchFile(f); setOcrBenchResults(null); setOcrPageData([]); setOcrEnhanced(""); setOcrProgress(""); setEvalPhase("scan"); } }}>
+                          <div style={{ fontSize: 36, marginBottom: 10 }}>📄</div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>
                             {ocrBenchFile ? ocrBenchFile.name : "Drop answer sheet here or click to browse"}
                           </div>
-                          <div style={{fontSize:11,color:"var(--muted)"}}>Supports: PDF (multi-page) · JPG · PNG · WEBP</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>Supports: PDF (multi-page) · JPG · PNG · WEBP</div>
                           {ocrBenchFile && (
-                            <div style={{marginTop:12,display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap"}}>
-                              {ocrBenchFile.type==="application/pdf"
-                                ? <span style={{fontSize:11,fontWeight:700,padding:"3px 12px",borderRadius:20,background:"rgba(136,117,255,0.15)",color:"var(--accent)",border:"1px solid rgba(136,117,255,0.3)"}}>📑 PDF · all pages scanned</span>
-                                : <span style={{fontSize:11,fontWeight:700,padding:"3px 12px",borderRadius:20,background:"rgba(0,219,160,0.1)",color:"var(--accent3)",border:"1px solid rgba(0,219,160,0.25)"}}>🖼 Image · OCR ready</span>
+                            <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+                              {ocrBenchFile.type === "application/pdf"
+                                ? <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 20, background: "rgba(136,117,255,0.15)", color: "var(--accent)", border: "1px solid rgba(136,117,255,0.3)" }}>📑 PDF · all pages scanned</span>
+                                : <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 20, background: "rgba(0,219,160,0.1)", color: "var(--accent3)", border: "1px solid rgba(0,219,160,0.25)" }}>🖼 Image · OCR ready</span>
                               }
-                              <button onClick={()=>{setOcrBenchFile(null);setOcrBenchResults(null);setOcrPageData([]);setOcrEnhanced("");setOcrProgress("");setEvalPhase("scan");}} style={{fontSize:11,padding:"3px 10px",borderRadius:20,background:"rgba(255,95,160,0.1)",color:"var(--accent2)",border:"1px solid rgba(255,95,160,0.25)",cursor:"pointer"}}>✕ Clear</button>
+                              <button onClick={() => { setOcrBenchFile(null); setOcrBenchResults(null); setOcrPageData([]); setOcrEnhanced(""); setOcrProgress(""); setEvalPhase("scan"); }} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "rgba(255,95,160,0.1)", color: "var(--accent2)", border: "1px solid rgba(255,95,160,0.25)", cursor: "pointer" }}>✕ Clear</button>
                             </div>
                           )}
-                          <input type="file" accept="image/*,.pdf" onChange={e=>{const f=e.target.files?.[0]||null;setOcrBenchFile(f);setOcrBenchResults(null);setOcrPageData([]);setOcrEnhanced("");setOcrProgress("");if(f)setEvalPhase("scan");}} style={{position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"}}/>
+                          <input type="file" accept="image/*,.pdf" onChange={e => { const f = e.target.files?.[0] || null; setOcrBenchFile(f); setOcrBenchResults(null); setOcrPageData([]); setOcrEnhanced(""); setOcrProgress(""); if (f) setEvalPhase("scan"); }} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", height: "100%" }} />
                         </div>
                         {ocrProgress && (
-                          <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",background:ocrProgress.startsWith("✓")?"rgba(0,219,160,0.07)":ocrProgress.startsWith("Error")?"rgba(255,95,160,0.07)":"rgba(136,117,255,0.07)",border:`1px solid ${ocrProgress.startsWith("✓")?"rgba(0,219,160,0.25)":ocrProgress.startsWith("Error")?"rgba(255,95,160,0.25)":"rgba(136,117,255,0.2)"}`,borderRadius:"var(--radius-sm)",marginBottom:12,fontSize:12.5,color:ocrProgress.startsWith("✓")?"var(--accent3)":ocrProgress.startsWith("Error")?"var(--accent2)":"var(--accent)"}}>
-                            {!ocrProgress.startsWith("✓")&&!ocrProgress.startsWith("Error")&&<div className="spinner"/>}
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: ocrProgress.startsWith("✓") ? "rgba(0,219,160,0.07)" : ocrProgress.startsWith("Error") ? "rgba(255,95,160,0.07)" : "rgba(136,117,255,0.07)", border: `1px solid ${ocrProgress.startsWith("✓") ? "rgba(0,219,160,0.25)" : ocrProgress.startsWith("Error") ? "rgba(255,95,160,0.25)" : "rgba(136,117,255,0.2)"}`, borderRadius: "var(--radius-sm)", marginBottom: 12, fontSize: 12.5, color: ocrProgress.startsWith("✓") ? "var(--accent3)" : ocrProgress.startsWith("Error") ? "var(--accent2)" : "var(--accent)" }}>
+                            {!ocrProgress.startsWith("✓") && !ocrProgress.startsWith("Error") && <div className="spinner" />}
                             <span>{ocrProgress}</span>
                           </div>
                         )}
-                        {ocrBenchFile && ocrBenchFile.type==="application/pdf" && (
-                          <div style={{display:"flex",background:"rgba(255,255,255,0.03)",border:"1px solid var(--border)",borderRadius:12,padding:3,marginBottom:15,gap:3}}>
-                            <button onClick={()=>setOcrEngine("groq-vision")} style={{flex:1,padding:"10px",borderRadius:9,fontSize:11,fontWeight:600,cursor:"pointer",transition:"all 0.2s",border:"none",background:ocrEngine==="groq-vision"?"var(--accent)":"transparent",color:ocrEngine==="groq-vision"?"#fff":"var(--muted)"}}>🚀 Turbo (Groq)</button>
-                            <button onClick={()=>setOcrEngine("gemini-vision")} style={{flex:1,padding:"10px",borderRadius:9,fontSize:11,fontWeight:600,cursor:"pointer",transition:"all 0.2s",border:"none",background:ocrEngine==="gemini-vision"?"var(--accent3)":"transparent",color:ocrEngine==="gemini-vision"?"#fff":"var(--muted)"}}>✨ High Speed (Gemini)</button>
-                            <button onClick={()=>setOcrEngine("trocr")} style={{flex:1,padding:"10px",borderRadius:9,fontSize:11,fontWeight:600,cursor:"pointer",transition:"all 0.2s",border:"none",background:ocrEngine==="trocr"?"rgba(124,111,255,0.15)":"transparent",color:ocrEngine==="trocr"?"var(--accent)":"var(--muted)"}}>🔒 Private (Local)</button>
+                        {ocrBenchFile && ocrBenchFile.type === "application/pdf" && (
+                          <div style={{ display: "flex", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 12, padding: 3, marginBottom: 15, gap: 3 }}>
+                            <button onClick={() => setOcrEngine("groq-vision")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "groq-vision" ? "var(--accent)" : "transparent", color: ocrEngine === "groq-vision" ? "#fff" : "var(--muted)" }}>🚀 Turbo (Groq)</button>
+                            <button onClick={() => setOcrEngine("gemini-vision")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "gemini-vision" ? "var(--accent3)" : "transparent", color: ocrEngine === "gemini-vision" ? "#fff" : "var(--muted)" }}>✨ High Speed (Gemini)</button>
+                            <button onClick={() => setOcrEngine("trocr")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "trocr" ? "rgba(124,111,255,0.15)" : "transparent", color: ocrEngine === "trocr" ? "var(--accent)" : "var(--muted)" }}>🔒 Private (Local)</button>
                           </div>
                         )}
-                        <button onClick={runOcrBenchmark} disabled={ocrBenchLoading||!ocrBenchFile} className="btn-primary" style={{width:"100%",padding:"13px 0",fontSize:14,letterSpacing:0.3}}>
+                        <button onClick={runOcrBenchmark} disabled={ocrBenchLoading || !ocrBenchFile} className="btn-primary" style={{ width: "100%", padding: "13px 0", fontSize: 14, letterSpacing: 0.3 }}>
                           {ocrBenchLoading ? "⏳ Scanning…" : "▶ Run OCR Scan"}
                         </button>
                       </div>
-                      {ocrBenchFile && ocrBenchFile.type!=="application/pdf" && (
-                        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
-                          <img src={URL.createObjectURL(ocrBenchFile)} alt="Preview" style={{maxHeight:240,maxWidth:"100%",borderRadius:"var(--radius-sm)",border:"1px solid var(--border)",boxShadow:"var(--shadow-md)"}}/>
+                      {ocrBenchFile && ocrBenchFile.type !== "application/pdf" && (
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <img src={URL.createObjectURL(ocrBenchFile)} alt="Preview" style={{ maxHeight: 240, maxWidth: "100%", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", boxShadow: "var(--shadow-md)" }} />
                         </div>
                       )}
                     </div>
@@ -3059,34 +3080,34 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
                   {/* ── PDF RESULTS (per-page) ── */}
                   {ocrIsPdf && ocrPageData.length > 0 && (
-                    <div className="panel" style={{animationDelay:"0.1s"}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
-                        <div className="panel-title" style={{marginBottom:0}}><span>📑</span> Scanned Pages ({ocrPageData.length})</div>
-                        <div style={{display:"flex",gap:8}}>
-                          <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-primary btn-sm">{ocrEnhLoading?"Fixing…":"🪄 Fix OCR Errors"}</button>
+                    <div className="panel" style={{ animationDelay: "0.1s" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+                        <div className="panel-title" style={{ marginBottom: 0 }}><span>📑</span> Scanned Pages ({ocrPageData.length})</div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-primary btn-sm">{ocrEnhLoading ? "Fixing…" : "🪄 Fix OCR Errors"}</button>
                         </div>
                       </div>
-                      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
-                        {ocrPageData.map((p:any)=>(
-                          <button key={p.page} onClick={()=>setOcrSelectedPage(p.page)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:600,cursor:"pointer",border:"1px solid",transition:"all 0.15s",background:ocrSelectedPage===p.page?"rgba(136,117,255,0.18)":"rgba(255,255,255,0.03)",borderColor:ocrSelectedPage===p.page?"rgba(136,117,255,0.45)":"var(--border)",color:ocrSelectedPage===p.page?"var(--accent)":"var(--muted)"}}>Pg {p.page}</button>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+                        {ocrPageData.map((p: any) => (
+                          <button key={p.page} onClick={() => setOcrSelectedPage(p.page)} style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid", transition: "all 0.15s", background: ocrSelectedPage === p.page ? "rgba(136,117,255,0.18)" : "rgba(255,255,255,0.03)", borderColor: ocrSelectedPage === p.page ? "rgba(136,117,255,0.45)" : "var(--border)", color: ocrSelectedPage === p.page ? "var(--accent)" : "var(--muted)" }}>Pg {p.page}</button>
                         ))}
                       </div>
-                      {ocrPageData.filter((p:any)=>p.page===ocrSelectedPage).map((p:any)=>(
+                      {ocrPageData.filter((p: any) => p.page === ocrSelectedPage).map((p: any) => (
                         <div key={p.page}>
-                          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
-                            <span style={{fontSize:11,fontWeight:700,color:"var(--text2)",letterSpacing:1}}>PAGE {p.page} OF {ocrPageData.length}</span>
-                            <span style={{fontSize:11,padding:"2px 9px",borderRadius:10,background:"rgba(0,219,160,0.08)",color:"var(--accent3)",border:"1px solid rgba(0,219,160,0.2)"}}>{p.confidence}% conf.</span>
-                            <span style={{fontSize:11,color:"var(--muted)",marginLeft:"auto"}}>{p.lines?.length||0} lines detected</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text2)", letterSpacing: 1 }}>PAGE {p.page} OF {ocrPageData.length}</span>
+                            <span style={{ fontSize: 11, padding: "2px 9px", borderRadius: 10, background: "rgba(0,219,160,0.08)", color: "var(--accent3)", border: "1px solid rgba(0,219,160,0.2)" }}>{p.confidence}% conf.</span>
+                            <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: "auto" }}>{p.lines?.length || 0} lines detected</span>
                           </div>
-                          <div style={{background:"#07071a",padding:20,borderRadius:"var(--radius-sm)",border:"1px solid var(--border)",fontFamily:"var(--font-mono)",fontSize:13,whiteSpace:"pre-wrap",color:"#c4c4e0",minHeight:180,maxHeight:440,overflowY:"auto",lineHeight:1.85}}>
-                            {p.text||<span style={{color:"var(--muted)"}}>No text detected on this page.</span>}
+                          <div style={{ background: "#07071a", padding: 20, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", fontFamily: "var(--font-mono)", fontSize: 13, whiteSpace: "pre-wrap", color: "#c4c4e0", minHeight: 180, maxHeight: 440, overflowY: "auto", lineHeight: 1.85 }}>
+                            {p.text || <span style={{ color: "var(--muted)" }}>No text detected on this page.</span>}
                           </div>
                         </div>
                       ))}
                       {ocrEnhanced && (
-                        <div style={{marginTop:20,borderTop:"1px solid var(--border)",paddingTop:20}}>
-                          <div className="panel-title" style={{marginBottom:12}}><span>✨</span> AI-Enhanced Text</div>
-                          <div style={{background:"rgba(136,117,255,0.04)",padding:20,borderRadius:"var(--radius-sm)",border:"1px dashed rgba(136,117,255,0.3)",fontSize:13,lineHeight:1.9,color:"var(--text)",whiteSpace:"pre-wrap",maxHeight:400,overflowY:"auto"}}>{ocrEnhanced}</div>
+                        <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 20 }}>
+                          <div className="panel-title" style={{ marginBottom: 12 }}><span>✨</span> AI-Enhanced Text</div>
+                          <div style={{ background: "rgba(136,117,255,0.04)", padding: 20, borderRadius: "var(--radius-sm)", border: "1px dashed rgba(136,117,255,0.3)", fontSize: 13, lineHeight: 1.9, color: "var(--text)", whiteSpace: "pre-wrap", maxHeight: 400, overflowY: "auto" }}>{ocrEnhanced}</div>
                         </div>
                       )}
                     </div>
@@ -3094,52 +3115,142 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
 
                   {/* ── SINGLE IMAGE RESULTS ── */}
                   {!ocrIsPdf && ocrBenchResults && (
-                    <div className="panel" style={{animationDelay:"0.1s"}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-                        <div className="panel-title" style={{marginBottom:0}}><span>⚡</span> Engine Results</div>
-                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                          {["groq","tesseract","easyocr"].map(eng=>(
-                            <button key={eng} onClick={()=>setOcrBenchSelected(eng)} className={ocrBenchSelected===eng?"btn-success btn-sm":"btn-ghost btn-sm"}>
-                              {eng==="groq"?"🤖 Groq":eng==="tesseract"?"🔡 Tesseract":"👁 EasyOCR"}
+                    <div className="panel" style={{ animationDelay: "0.1s" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                        <div className="panel-title" style={{ marginBottom: 0 }}><span>⚡</span> Engine Results</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {["groq", "tesseract", "easyocr"].map(eng => (
+                            <button key={eng} onClick={() => setOcrBenchSelected(eng)} className={ocrBenchSelected === eng ? "btn-success btn-sm" : "btn-ghost btn-sm"}>
+                              {eng === "groq" ? "🤖 Groq" : eng === "tesseract" ? "🔡 Tesseract" : "👁 EasyOCR"}
                             </button>
                           ))}
                         </div>
                       </div>
-                      <div style={{background:"#07071a",padding:20,borderRadius:"var(--radius-sm)",border:"1px solid var(--border)",fontFamily:"var(--font-mono)",fontSize:13,whiteSpace:"pre-wrap",color:"#c4c4e0",minHeight:180,maxHeight:400,overflowY:"auto",lineHeight:1.85}}>
-                        {ocrBenchResults[ocrBenchSelected]?.error ? <span style={{color:"#ff5fa0"}}>Error: {ocrBenchResults[ocrBenchSelected].error}</span> : (ocrBenchResults[ocrBenchSelected]?.text||"No text detected.")}
+                      <div style={{ background: "#07071a", padding: 20, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", fontFamily: "var(--font-mono)", fontSize: 13, whiteSpace: "pre-wrap", color: "#c4c4e0", minHeight: 180, maxHeight: 400, overflowY: "auto", lineHeight: 1.85 }}>
+                        {ocrBenchResults[ocrBenchSelected]?.error ? <span style={{ color: "#ff5fa0" }}>Error: {ocrBenchResults[ocrBenchSelected].error}</span> : (ocrBenchResults[ocrBenchSelected]?.text || "No text detected.")}
                       </div>
-                      <div style={{marginTop:14,display:"flex",gap:10,flexWrap:"wrap"}}>
-                        <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-primary btn-sm">{ocrEnhLoading?"Fixing…":"🪄 Fix OCR Errors"}</button>
+                      <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-primary btn-sm">{ocrEnhLoading ? "Fixing…" : "🪄 Fix OCR Errors"}</button>
                       </div>
                       {ocrEnhanced && (
-                        <div style={{marginTop:16,background:"rgba(136,117,255,0.04)",padding:20,borderRadius:"var(--radius-sm)",border:"1px dashed rgba(136,117,255,0.3)",fontSize:13,lineHeight:1.9,color:"var(--text)",whiteSpace:"pre-wrap"}}>
-                          <div style={{fontSize:10,fontWeight:700,letterSpacing:2,color:"var(--accent)",marginBottom:10}}>AI ENHANCED TEXT</div>
+                        <div style={{ marginTop: 16, background: "rgba(136,117,255,0.04)", padding: 20, borderRadius: "var(--radius-sm)", border: "1px dashed rgba(136,117,255,0.3)", fontSize: 13, lineHeight: 1.9, color: "var(--text)", whiteSpace: "pre-wrap" }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "var(--accent)", marginBottom: 10 }}>AI ENHANCED TEXT</div>
                           {ocrEnhanced}
                         </div>
                       )}
                     </div>
                   )}
 
-                  {/* ── ACTION BAR (Phase 2) ── */}
-                  {evalPhase==="action" && (
-                    <div style={{background:"rgba(136,117,255,0.05)",border:"1px solid rgba(136,117,255,0.25)",borderRadius:"var(--radius-lg)",padding:"24px 28px",display:"flex",gap:14,flexWrap:"wrap" as const,alignItems:"center",animation:"fadeUp 0.35s ease both"}}>
-                      <div style={{flex:1,minWidth:200}}>
-                        <div style={{fontSize:13,fontWeight:600,color:"var(--text)",marginBottom:4}}>✓ Document scanned successfully</div>
-                        <div style={{fontSize:11.5,color:"var(--muted)",fontWeight:300}}>What would you like to do with this document?</div>
+                  {/* ── ACTION BAR + INLINE EVALUATE (Phase 2) ── */}
+                  {evalPhase === "action" && (
+                    <div style={{ animation: "fadeUp 0.35s ease both" }}>
+                      {/* Success banner with utility actions */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 20px", background: "rgba(0,219,160,0.07)", border: "1px solid rgba(0,219,160,0.3)", borderRadius: "var(--radius-sm)", marginBottom: 16 }}>
+                        <span style={{ fontSize: 20 }}>✅</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--accent3)" }}>Scan complete — text ready for evaluation</div>
+                          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>Fill in exam details below and click Evaluate Now to get AI grading results instantly</div>
+                        </div>
+                        <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-ghost" style={{ fontSize: 12, flexShrink: 0 }}>
+                          {ocrEnhLoading ? "Fixing…" : "🪄 Fix OCR Errors"}
+                        </button>
+                        <button onClick={() => {
+                          const text = ocrEnhanced || ocrMergedText || ocrBenchResults?.[ocrBenchSelected]?.text || "";
+                          if (!text) return alert("No text to copy");
+                          navigator.clipboard.writeText(text);
+                          alert("Text copied to clipboard!");
+                        }} className="btn-ghost" style={{ fontSize: 12, flexShrink: 0 }}>📋 Copy</button>
                       </div>
-                      <button onClick={sendOcrToEvaluator} style={{background:"linear-gradient(135deg,rgba(136,117,255,0.22),rgba(74,63,181,0.28))",color:"var(--accent)",border:"1px solid rgba(136,117,255,0.45)",padding:"11px 22px",borderRadius:"var(--radius-sm)",fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:8,transition:"all 0.2s"}}
-                        onMouseEnter={e=>(e.currentTarget.style.transform="translateY(-2px)")} onMouseLeave={e=>(e.currentTarget.style.transform="")}>
-                        ⭐ Evaluate Answer Sheet
-                      </button>
-                      <button onClick={enhanceOcrText} disabled={ocrEnhLoading} className="btn-ghost" style={{fontSize:12.5}}>
-                        {ocrEnhLoading?"Fixing…":"🪄 Fix OCR Errors"}
-                      </button>
-                      <button onClick={()=>{
-                        const text = ocrEnhanced||ocrMergedText||ocrBenchResults?.[ocrBenchSelected]?.text||"";
-                        if(!text) return alert("No text to copy");
-                        navigator.clipboard.writeText(text);
-                        alert("Text copied to clipboard!");
-                      }} className="btn-ghost" style={{fontSize:12.5}}>📋 Copy Text</button>
+
+                      {/* Inline Quick Evaluate Form */}
+                      <div className="panel" style={{ border: "1px solid rgba(136,117,255,0.35)", background: "rgba(136,117,255,0.04)" }}>
+                        <div className="panel-title" style={{ marginBottom: 18 }}><span>🧠</span> Evaluate This Paper</div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
+                            <label className="field-label">Subject <span style={{ color: "var(--muted)", fontWeight: 300 }}>(optional)</span></label>
+                            <input className="field-input" placeholder="e.g. Physics, Maths, History…" value={subject} onChange={e => setSubject(e.target.value)} />
+                          </div>
+                          <div className="field-group" style={{ marginBottom: 0 }}>
+                            <label className="field-label">Total Marks <span style={{ color: "var(--accent2)", fontSize: 10 }}>* required</span></label>
+                            <input className="field-input" placeholder="e.g. 100" type="number" value={totalMarksInput} onChange={e => setTotalMarksInput(e.target.value)} />
+                          </div>
+                        </div>
+
+                        <div className="field-group" style={{ marginBottom: 12 }}>
+                          <label className="field-label">Question Paper <span style={{ color: "var(--muted)", fontWeight: 300 }}>(optional — upload for better accuracy)</span></label>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <label style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(255,255,255,0.03)", border: "1px dashed var(--border2)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontSize: 12.5, color: questionPaperFile ? "var(--accent3)" : "var(--muted)" }}>
+                              <span>{questionPaperFile ? "📃" : "📎"}</span>
+                              <span style={{ flex: 1 }}>{questionPaperFile ? questionPaperFile.name : "Click to upload question paper (PDF or image)"}</span>
+                              <input type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={e => setQuestionPaperFile(e.target.files?.[0] || null)} />
+                            </label>
+                            {questionPaperFile && <button onClick={() => setQuestionPaperFile(null)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 20, background: "rgba(255,95,160,0.1)", color: "var(--accent2)", border: "1px solid rgba(255,95,160,0.25)", cursor: "pointer" }}>✕</button>}
+                          </div>
+                        </div>
+
+                        <div className="field-group" style={{ marginBottom: 18 }}>
+                          <label className="field-label">Marks Distribution <span style={{ color: "var(--muted)", fontWeight: 300 }}>(optional — helps AI allocate marks per question)</span></label>
+                          <textarea className="field-input" rows={2} placeholder="e.g. Q1: 5 marks, Q2: 10 marks, Q3: 5 marks… or leave blank for AI to infer automatically"
+                            style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }}
+                            value={marksDistribution} onChange={e => setMarksDistribution(e.target.value)} />
+                        </div>
+
+                        {/* ── STRICTNESS SLIDER (Quick Panel) ── */}
+                        {(() => {
+                          const slabels = ["Very Lenient", "Lenient", "Balanced", "Strict", "Very Strict"];
+                          const scolors = ["#00dba0", "#7bc67e", "#ffcc5c", "#ff8c42", "#ff5fa0"];
+                          const sdesc = [
+                            "Full marks for correct understanding, even if wording is informal.",
+                            "Full marks for mostly correct answers. Minor gaps overlooked.",
+                            "Fair grading — rewards correct ideas, deducts for clear errors.",
+                            "Strict: missing steps or key terms are penalised.",
+                            "University-level: every term, step, and unit must be present."
+                          ];
+                          const si = strictnessLevel - 1;
+                          return (
+                            <div className="field-group" style={{ marginBottom: 18 }}>
+                              <label className="field-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                <span>🎚️ Grading Strictness</span>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: scolors[si], background: `${scolors[si]}18`, border: `1px solid ${scolors[si]}55`, borderRadius: 20, padding: "2px 10px" }}>
+                                  {strictnessLevel} — {slabels[si]}
+                                </span>
+                              </label>
+                              <input
+                                type="range" min={1} max={5} step={1}
+                                value={strictnessLevel}
+                                onChange={e => setStrictnessLevel(Number(e.target.value))}
+                                style={{ width: "100%", accentColor: scolors[si], cursor: "pointer", margin: "6px 0" }}
+                              />
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "var(--muted)", marginBottom: 4 }}>
+                                {slabels.map((l, i) => <span key={i} style={{ color: i === si ? scolors[si] : undefined, fontWeight: i === si ? 700 : 400 }}>{l}</span>)}
+                              </div>
+                              <div style={{ fontSize: 11.5, color: "var(--text2)", background: `${scolors[si]}0d`, border: `1px solid ${scolors[si]}30`, borderRadius: 8, padding: "7px 12px", marginTop: 4 }}>
+                                {sdesc[si]}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
+                          <button
+                            className="eval-cta-btn"
+                            onClick={evaluatePaper}
+                            disabled={!totalMarksInput || loading}
+                            style={{ flex: 1, minWidth: 180 }}
+                          >
+                            {loading ? "⏳ Evaluating…" : "🏆 Evaluate Now →"}
+                          </button>
+                          <button onClick={sendOcrToEvaluator} className="btn-ghost" style={{ fontSize: 12.5 }}>
+                            ⚙️ Advanced Options
+                          </button>
+                        </div>
+                        {!totalMarksInput && (
+                          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--gold)", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span>⚠</span> Enter total marks above to enable evaluation
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -3147,16 +3258,16 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               )}
 
               {/* ── PHASE 2: CONFIGURE & EVALUATE ── */}
-              {evalPhase==="evaluate" && (
+              {evalPhase === "evaluate" && (
                 <>
                   {evalFromOcr && (
-                    <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 18px",background:"rgba(0,219,160,0.07)",border:"1px solid rgba(0,219,160,0.25)",borderRadius:"var(--radius-sm)",marginBottom:16}}>
-                      <span style={{fontSize:18}}>✅</span>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:13,fontWeight:600,color:"var(--accent3)"}}>Answer sheet already scanned — text ready</div>
-                        <div style={{fontSize:11,color:"var(--muted)",marginTop:2}}>The OCR text from your scan will be evaluated directly. Provide grading context below.</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", background: "rgba(0,219,160,0.07)", border: "1px solid rgba(0,219,160,0.25)", borderRadius: "var(--radius-sm)", marginBottom: 16 }}>
+                      <span style={{ fontSize: 18 }}>✅</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent3)" }}>Answer sheet already scanned — text ready</div>
+                        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>The OCR text from your scan will be evaluated directly. Provide grading context below.</div>
                       </div>
-                      <button onClick={()=>setEvalFromOcr("")} style={{fontSize:11,padding:"4px 12px",borderRadius:20,background:"rgba(255,95,160,0.1)",color:"var(--accent2)",border:"1px solid rgba(255,95,160,0.25)",cursor:"pointer"}}>✕ Clear</button>
+                      <button onClick={() => setEvalFromOcr("")} style={{ fontSize: 11, padding: "4px 12px", borderRadius: 20, background: "rgba(255,95,160,0.1)", color: "var(--accent2)", border: "1px solid rgba(255,95,160,0.25)", cursor: "pointer" }}>✕ Clear</button>
                     </div>
                   )}
                   <div className="panel">
@@ -3164,27 +3275,27 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       <div className="upload-section-num">1</div>
                       <div><div className="upload-section-title">Exam Details</div><div className="upload-section-sub">Basic information about this exam</div></div>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
-                      <div className="field-group" style={{marginBottom:0}}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Student (optional)</label>
-                        <select className="field-input" style={{cursor:"pointer"}} onChange={e=>setSelectedStudent(e.target.value)}>
+                        <select className="field-input" style={{ cursor: "pointer" }} onChange={e => setSelectedStudent(e.target.value)}>
                           <option value="">— Select student —</option>
-                          {students.map(s=><option key={s.id} value={String(s.id)}>{s.name} ({s.grade})</option>)}
+                          {students.map(s => <option key={s.id} value={String(s.id)}>{s.name} ({s.grade})</option>)}
                         </select>
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Subject *</label>
-                        <input className="field-input" placeholder="e.g. Physics, History, Maths" value={subject} onChange={e=>setSubject(e.target.value)}/>
+                        <input className="field-input" placeholder="e.g. Physics, History, Maths" value={subject} onChange={e => setSubject(e.target.value)} />
                       </div>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                      <div className="field-group" style={{marginBottom:0}}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Paper / Exam Title</label>
-                        <input className="field-input" placeholder="e.g. Mid-Term 2025" value={paperTitle} onChange={e=>setPaperTitle(e.target.value)}/>
+                        <input className="field-input" placeholder="e.g. Mid-Term 2025" value={paperTitle} onChange={e => setPaperTitle(e.target.value)} />
                       </div>
-                      <div className="field-group" style={{marginBottom:0}}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
                         <label className="field-label">Total Marks *</label>
-                        <input className="field-input" placeholder="e.g. 100" type="number" value={totalMarksInput} onChange={e=>setTotalMarksInput(e.target.value)}/>
+                        <input className="field-input" placeholder="e.g. 100" type="number" value={totalMarksInput} onChange={e => setTotalMarksInput(e.target.value)} />
                       </div>
                     </div>
                   </div>
@@ -3194,13 +3305,85 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       <div><div className="upload-section-title">Marks Distribution (Optional)</div><div className="upload-section-sub">How marks are split across questions (AI can also infer this from uploads)</div></div>
                     </div>
                     <div className="marks-example">
-                      <strong style={{color:"var(--text2)",fontFamily:"var(--font-sans)",fontSize:11,fontWeight:600}}>Example:</strong><br/>
-                      Section A (MCQ): Q1–Q10 → 1 mark each = 10 marks<br/>
+                      <strong style={{ color: "var(--text2)", fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600 }}>Example:</strong><br />
+                      Section A (MCQ): Q1–Q10 → 1 mark each = 10 marks<br />
                       Section B (Short Answer): Q11, Q12, Q13 → 5 marks each = 15 marks
                     </div>
                     <textarea className="field-input" rows={4} placeholder="Type or paste marks distribution here…"
-                      style={{resize:"vertical" as const,lineHeight:1.75,fontWeight:300}}
-                      value={marksDistribution} onChange={e=>setMarksDistribution(e.target.value)}/>
+                      style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }}
+                      value={marksDistribution} onChange={e => setMarksDistribution(e.target.value)} />
+                  </div>
+
+                  {/* ── STRICTNESS SLIDER (Advanced Form) ── */}
+                  <div className="panel" style={{ background: "rgba(255,204,92,0.04)", borderColor: "rgba(255,204,92,0.2)" }}>
+                    <div className="upload-section-header">
+                      <div className="upload-section-num">4</div>
+                      <div>
+                        <div className="upload-section-title">🎚️ Grading Strictness</div>
+                        <div className="upload-section-sub">Control how strictly the AI grades — from kind school teacher to university examiner</div>
+                      </div>
+                    </div>
+                    {(() => {
+                      const slabels = ["Very Lenient", "Lenient", "Balanced", "Strict", "Very Strict"];
+                      const scolors = ["#00dba0", "#7bc67e", "#ffcc5c", "#ff8c42", "#ff5fa0"];
+                      const sdesc = [
+                        "Full marks for correct understanding, even if wording is informal. Encourages students.",
+                        "Full marks for mostly correct answers. Minor gaps and spelling errors overlooked.",
+                        "Fair, balanced grading — rewards correct ideas, deducts for clear errors only.",
+                        "Strict: missing steps, key terms, or units are penalised. No rounding up.",
+                        "University-level: every required term, formula, step, and unit must be present."
+                      ];
+                      const si = strictnessLevel - 1;
+                      const examples = [
+                        "e.g. Student writes the right answer in informal words → Full marks",
+                        "e.g. Correct answer, missing one working step → Full marks",
+                        "e.g. Correct answer, missing one working step → Partial marks",
+                        "e.g. Correct answer, missing working → 75% of marks max",
+                        "e.g. Correct answer, missing working → 50% of marks max"
+                      ];
+                      return (
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                            <span style={{ fontSize: 13, color: "var(--text2)" }}>Select grading level:</span>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: scolors[si], background: `${scolors[si]}18`, border: `1px solid ${scolors[si]}55`, borderRadius: 20, padding: "4px 14px" }}>
+                              Level {strictnessLevel} — {slabels[si]}
+                            </span>
+                          </div>
+
+                          {/* Five selector cards */}
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, marginBottom: 14 }}>
+                            {slabels.map((label, i) => (
+                              <button
+                                key={i}
+                                onClick={() => setStrictnessLevel(i + 1)}
+                                style={{
+                                  padding: "10px 4px",
+                                  borderRadius: 10,
+                                  border: `2px solid ${strictnessLevel === i + 1 ? scolors[i] : "var(--border)"}`,
+                                  background: strictnessLevel === i + 1 ? `${scolors[i]}18` : "rgba(255,255,255,0.02)",
+                                  color: strictnessLevel === i + 1 ? scolors[i] : "var(--muted)",
+                                  fontWeight: strictnessLevel === i + 1 ? 700 : 400,
+                                  fontSize: 11,
+                                  cursor: "pointer",
+                                  transition: "all 0.2s",
+                                  textAlign: "center" as const,
+                                }}
+                              >
+                                <div style={{ fontSize: 18, marginBottom: 4 }}>
+                                  {["😊", "🙂", "📏", "🧑‍⚖️", "🎓"][i]}
+                                </div>
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div style={{ fontSize: 12.5, color: "var(--text2)", background: `${scolors[si]}0d`, border: `1px solid ${scolors[si]}30`, borderRadius: 10, padding: "10px 14px" }}>
+                            <strong style={{ color: scolors[si] }}>{slabels[si]}:</strong> {sdesc[si]}<br />
+                            <span style={{ color: "var(--muted)", fontSize: 11.5, marginTop: 4, display: "block" }}>{examples[si]}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="panel">
                     <div className="upload-section-header">
@@ -3208,19 +3391,19 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       <div><div className="upload-section-title">Grading Mode — Provide What You Have</div><div className="upload-section-sub">The AI automatically adapts based on what you provide</div></div>
                     </div>
                     {/* Mode badges */}
-                    <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
-                      <span style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontWeight:700,background:modelAnswersFile?"rgba(0,219,160,0.15)":"rgba(255,255,255,0.04)",color:modelAnswersFile?"var(--accent3)":"var(--muted)",border:`1px solid ${modelAnswersFile?"rgba(0,219,160,0.4)":"var(--border)"}`}}>✅ Mode 1 — Strict Rubric {modelAnswersFile?"(Active)":"(provide marking scheme)"}</span>
-                      <span style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontWeight:700,background:!modelAnswersFile&&syllabusFile?"rgba(136,117,255,0.15)":"rgba(255,255,255,0.04)",color:!modelAnswersFile&&syllabusFile?"var(--accent)":"var(--muted)",border:`1px solid ${!modelAnswersFile&&syllabusFile?"rgba(136,117,255,0.4)":"var(--border)"}`}}>📚 Mode 2 — Syllabus Guided {!modelAnswersFile&&syllabusFile?"(Active)":"(provide syllabus)"}</span>
-                      <span style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontWeight:700,background:!modelAnswersFile&&!syllabusFile?"rgba(255,204,92,0.15)":"rgba(255,255,255,0.04)",color:!modelAnswersFile&&!syllabusFile?"var(--gold)":"var(--muted)",border:`1px solid ${!modelAnswersFile&&!syllabusFile?"rgba(255,204,92,0.4)":"var(--border)"}`}}>🤖 Mode 3 — AI General {!modelAnswersFile&&!syllabusFile?"(Active)":""}</span>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+                      <span style={{ fontSize: 11, padding: "4px 12px", borderRadius: 20, fontWeight: 700, background: modelAnswersFile ? "rgba(0,219,160,0.15)" : "rgba(255,255,255,0.04)", color: modelAnswersFile ? "var(--accent3)" : "var(--muted)", border: `1px solid ${modelAnswersFile ? "rgba(0,219,160,0.4)" : "var(--border)"}` }}>✅ Mode 1 — Strict Rubric {modelAnswersFile ? "(Active)" : "(provide marking scheme)"}</span>
+                      <span style={{ fontSize: 11, padding: "4px 12px", borderRadius: 20, fontWeight: 700, background: !modelAnswersFile && syllabusFile ? "rgba(136,117,255,0.15)" : "rgba(255,255,255,0.04)", color: !modelAnswersFile && syllabusFile ? "var(--accent)" : "var(--muted)", border: `1px solid ${!modelAnswersFile && syllabusFile ? "rgba(136,117,255,0.4)" : "var(--border)"}` }}>📚 Mode 2 — Syllabus Guided {!modelAnswersFile && syllabusFile ? "(Active)" : "(provide syllabus)"}</span>
+                      <span style={{ fontSize: 11, padding: "4px 12px", borderRadius: 20, fontWeight: 700, background: !modelAnswersFile && !syllabusFile ? "rgba(255,204,92,0.15)" : "rgba(255,255,255,0.04)", color: !modelAnswersFile && !syllabusFile ? "var(--gold)" : "var(--muted)", border: `1px solid ${!modelAnswersFile && !syllabusFile ? "rgba(255,204,92,0.4)" : "var(--border)"}` }}>🤖 Mode 3 — AI General {!modelAnswersFile && !syllabusFile ? "(Active)" : ""}</span>
                     </div>
-                    <div style={{display:"flex",flexDirection:"column" as const,gap:10}}>
-                      {(!evalFromOcr || proMode) && <UploadZone icon="✍️" label="Handwritten Answer Sheet" desc="Student's handwritten PDF or image — use PDF for multi-page booklets" required={true} setter={setAnswerSheetFile} file={answerSheetFile}/>}
-                      <UploadZone icon="📃" label="Question Paper" desc="Upload so AI knows what was asked — greatly improves accuracy" required={false} setter={setQuestionPaperFile} file={questionPaperFile}/>
-                      <UploadZone icon="✅" label="Marking Scheme / Model Answers" desc="Mode 1: AI grades strictly against your answer key" required={false} setter={setModelAnswersFile} file={modelAnswersFile}/>
-                      <UploadZone icon="📚" label="Syllabus / Topic List" desc="Mode 2: AI stays within syllabus scope" required={false} setter={setSyllabusFile} file={syllabusFile}/>
+                    <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                      {(!evalFromOcr || proMode) && <UploadZone icon="✍️" label="Handwritten Answer Sheet" desc="Student's handwritten PDF or image — use PDF for multi-page booklets" required={true} setter={setAnswerSheetFile} file={answerSheetFile} />}
+                      <UploadZone icon="📃" label="Question Paper" desc="Upload so AI knows what was asked — greatly improves accuracy" required={false} setter={setQuestionPaperFile} file={questionPaperFile} />
+                      <UploadZone icon="✅" label="Marking Scheme / Model Answers" desc="Mode 1: AI grades strictly against your answer key" required={false} setter={setModelAnswersFile} file={modelAnswersFile} />
+                      <UploadZone icon="📚" label="Syllabus / Topic List" desc="Mode 2: AI stays within syllabus scope" required={false} setter={setSyllabusFile} file={syllabusFile} />
                     </div>
                   </div>
-                  
+
                   {/* --- PRO MODE TOGGLE --- */}
                   <div className="panel" style={{ background: "rgba(136, 117, 255, 0.05)", borderColor: "rgba(136, 117, 255, 0.3)" }}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
@@ -3235,17 +3418,17 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       <label style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 10 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, color: proMode ? "var(--accent)" : "var(--muted)" }}>{proMode ? "ENABLED" : "DISABLED"}</span>
                         <div style={{ width: 44, height: 24, borderRadius: 12, background: proMode ? "var(--accent)" : "var(--surface3)", border: `1px solid ${proMode ? "var(--accent)" : "var(--border)"}`, position: "relative", transition: "all 0.3s" }}>
-                           <input type="checkbox" checked={proMode} onChange={e => setProMode(e.target.checked)} style={{ opacity: 0, position: "absolute", inset: 0, cursor: "pointer" }} />
-                           <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: proMode ? 22 : 2, transition: "all 0.3s" }} />
+                          <input type="checkbox" checked={proMode} onChange={e => setProMode(e.target.checked)} style={{ opacity: 0, position: "absolute", inset: 0, cursor: "pointer" }} />
+                          <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: proMode ? 22 : 2, transition: "all 0.3s" }} />
                         </div>
                       </label>
                     </div>
                   </div>
 
-                  <div className="eval-cta-wrap" style={{marginTop:16}}>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:14,fontWeight:600,color:"var(--text)",marginBottom:4}}>Ready to evaluate?</div>
-                      <div style={{fontSize:12,color:"var(--muted)",fontWeight:300}}>
+                  <div className="eval-cta-wrap" style={{ marginTop: 16 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>Ready to evaluate?</div>
+                      <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 300 }}>
                         {evalFromOcr ? "✓ Pre-scanned answer text ready · " : answerSheetFile ? "✓ Answer sheet ready · " : "Upload answer sheet to continue · "}
                         {questionPaperFile ? "✓ Question paper uploaded" : "No question paper — AI will infer from marks distribution"}
                       </div>
@@ -3259,64 +3442,64 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               )}
 
               {/* ── PHASE 3: PROGRESS ── */}
-              {evalPhase==="progress" && (es==="ocr"||es==="ai") && (
+              {evalPhase === "progress" && (es === "ocr" || es === "ai") && (
                 <div className="progress-screen">
-                  <div className="progress-icon">{es==="ocr"?"📄":"🧠"}</div>
-                  <div style={{fontFamily:"var(--font-serif)",fontSize:22,color:"#fff",marginBottom:8}}>{es==="ocr"?"Reading Handwriting…":"Evaluating Answers…"}</div>
-                  <div style={{fontSize:13,color:"var(--muted)",marginBottom:24,fontWeight:300}}>{evalProgress}</div>
+                  <div className="progress-icon">{es === "ocr" ? "📄" : "🧠"}</div>
+                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "#fff", marginBottom: 8 }}>{es === "ocr" ? "Reading Handwriting…" : "Evaluating Answers…"}</div>
+                  <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 24, fontWeight: 300 }}>{evalProgress}</div>
                   <div className="progress-steps">
-                    <div className={`progress-step-row ${es==="ocr"?"running":"complete"}`}><div className="progress-step-dot"/>{es==="ocr"?"Reading answer sheet…":"✓ Answer sheet read"}</div>
-                    {questionPaperFile&&<div className={`progress-step-row ${es==="ocr"?"waiting":"complete"}`}><div className="progress-step-dot"/>{es==="ocr"?"Waiting to read question paper…":"✓ Question paper understood"}</div>}
-                    <div className={`progress-step-row ${es==="ai"?"running":"waiting"}`}><div className="progress-step-dot"/>{es==="ai"?"Reasoning through each answer…":"AI marking & reasoning"}</div>
-                    <div className="progress-step-row waiting"><div className="progress-step-dot"/>Results & report ready</div>
+                    <div className={`progress-step-row ${es === "ocr" ? "running" : "complete"}`}><div className="progress-step-dot" />{es === "ocr" ? "Reading answer sheet…" : "✓ Answer sheet read"}</div>
+                    {questionPaperFile && <div className={`progress-step-row ${es === "ocr" ? "waiting" : "complete"}`}><div className="progress-step-dot" />{es === "ocr" ? "Waiting to read question paper…" : "✓ Question paper understood"}</div>}
+                    <div className={`progress-step-row ${es === "ai" ? "running" : "waiting"}`}><div className="progress-step-dot" />{es === "ai" ? "Reasoning through each answer…" : "AI marking & reasoning"}</div>
+                    <div className="progress-step-row waiting"><div className="progress-step-dot" />Results & report ready</div>
                   </div>
                 </div>
               )}
 
 
 
-              {evalPhase==="done" && evaluation && (
+              {evalPhase === "done" && evaluation && (
                 <>
                   <div className="score-hero">
                     <div className="score-hero-main">
                       <div>
-                        <div style={{fontSize:11,fontWeight:700,letterSpacing:2.5,textTransform:"uppercase" as const,color:"var(--muted)",marginBottom:6}}>Total Score</div>
-                        <div className="score-big" style={{color:evaluation.percentage>=75?"var(--accent3)":evaluation.percentage>=50?"var(--gold)":"var(--accent2)"}}>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: 6 }}>Total Score</div>
+                        <div className="score-big" style={{ color: evaluation.percentage >= 75 ? "var(--accent3)" : evaluation.percentage >= 50 ? "var(--gold)" : "var(--accent2)" }}>
                           {evaluation.totalMarks}<sub>/{evaluation.maxMarks}</sub>
                         </div>
                       </div>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:9,fontWeight:700,letterSpacing:2,textTransform:"uppercase" as const,color:"var(--muted)",marginBottom:8}}>Performance</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" as const, color: "var(--muted)", marginBottom: 8 }}>Performance</div>
                         <div className="score-bar-track">
-                          <div className="score-bar-fill" style={{width:`${evaluation.percentage}%`,background:evaluation.percentage>=75?"linear-gradient(90deg,var(--accent3),#00c87e)":evaluation.percentage>=50?"linear-gradient(90deg,var(--gold),#e5a800)":"linear-gradient(90deg,var(--accent2),#e0005a)"}}/>
+                          <div className="score-bar-fill" style={{ width: `${evaluation.percentage}%`, background: evaluation.percentage >= 75 ? "linear-gradient(90deg,var(--accent3),#00c87e)" : evaluation.percentage >= 50 ? "linear-gradient(90deg,var(--gold),#e5a800)" : "linear-gradient(90deg,var(--accent2),#e0005a)" }} />
                         </div>
-                          <div style={{fontSize:13,color:"var(--text2)"}}><strong>{evaluation.percentage}%</strong> · Grade <strong>{evaluation.grade}</strong></div>
+                        <div style={{ fontSize: 13, color: "var(--text2)" }}><strong>{evaluation.percentage}%</strong> · Grade <strong>{evaluation.grade}</strong></div>
                       </div>
                     </div>
                     <div className="score-card-sm">
-                      <div className="score-card-val" style={{color:"var(--accent)"}}>{evaluation.percentage}%</div>
+                      <div className="score-card-val" style={{ color: "var(--accent)" }}>{evaluation.percentage}%</div>
                       <div className="score-card-lbl">Percentage</div>
                     </div>
                     <div className="score-card-sm">
-                      <div className="score-card-val" style={{color:["A+","A"].includes(evaluation.grade)?"var(--accent3)":["B","C"].includes(evaluation.grade)?"var(--gold)":"var(--accent2)"}}>{evaluation.grade}</div>
+                      <div className="score-card-val" style={{ color: ["A+", "A"].includes(evaluation.grade) ? "var(--accent3)" : ["B", "C"].includes(evaluation.grade) ? "var(--gold)" : "var(--accent2)" }}>{evaluation.grade}</div>
                       <div className="score-card-lbl">Grade</div>
                     </div>
                   </div>
                   {evaluation.teacherNote && (
-                    <div style={{background:"rgba(124,111,255,0.04)",border:"1px solid rgba(124,111,255,0.15)",borderRadius:"var(--radius)",padding:"14px 22px",marginBottom:14,fontSize:13,color:"var(--text2)",lineHeight:1.8,display:"flex",gap:12,fontWeight:300}}>
-                      <span style={{fontSize:17}}>👨‍🏫</span>
-                      <div><strong style={{color:"var(--text)",fontWeight:500}}>Teacher's Note: </strong>{evaluation.teacherNote}</div>
+                    <div style={{ background: "rgba(124,111,255,0.04)", border: "1px solid rgba(124,111,255,0.15)", borderRadius: "var(--radius)", padding: "14px 22px", marginBottom: 14, fontSize: 13, color: "var(--text2)", lineHeight: 1.8, display: "flex", gap: 12, fontWeight: 300 }}>
+                      <span style={{ fontSize: 17 }}>👨‍🏫</span>
+                      <div><strong style={{ color: "var(--text)", fontWeight: 500 }}>Teacher's Note: </strong>{evaluation.teacherNote}</div>
                     </div>
                   )}
                   <div className="panel">
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
-                      <div className="panel-title" style={{marginBottom:0}}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 }}>
+                      <div className="panel-title" style={{ marginBottom: 0 }}>
                         <span>📋</span> Question Breakdown
-                        {questionPaperFile?<span className="source-badge source-paper" style={{marginLeft:8}}>📃 From Paper</span>:<span className="source-badge source-dist" style={{marginLeft:8}}>🧠 Inferred</span>}
+                        {questionPaperFile ? <span className="source-badge source-paper" style={{ marginLeft: 8 }}>📃 From Paper</span> : <span className="source-badge source-dist" style={{ marginLeft: 8 }}>🧠 Inferred</span>}
                       </div>
-                      <div style={{display:"flex",gap:8}}>
-                        <button onClick={downloadReportCard} className="btn-success" style={{fontSize:11.5}}>⬇ Report Card</button>
-                        <button onClick={()=>{setEvalStep("idle");setEvaluation(null);}} className="btn-ghost" style={{fontSize:11.5}}>↺ New</button>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={downloadReportCard} className="btn-success" style={{ fontSize: 11.5 }}>⬇ Report Card</button>
+                        <button onClick={() => { setEvalStep("idle"); setEvaluation(null); }} className="btn-ghost" style={{ fontSize: 11.5 }}>↺ New</button>
                       </div>
                     </div>
                     <table className="eval-table">
@@ -3324,21 +3507,45 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                         <tr><th>Q No.</th><th>Page</th><th>Question Asked</th><th>Marks</th><th>Red Pen Annotation</th><th>Reasoning & Deductions</th></tr>
                       </thead>
                       <tbody>
-                        {evaluation.questions.map((q:any,i:number)=>{
-                          const cls=q.awarded===q.max?"marks-full":q.awarded===0?"marks-zero":"marks-partial";
-                          return (
-                            <tr key={i}>
-                               <td><strong style={{color:"var(--text)",fontWeight:500}}>{q.qNo}</strong></td>
-                               <td style={{fontSize:11,color:"var(--muted)"}}>{q.pageNo ? `Page ${q.pageNo}` : "—"}</td>
-                               <td style={{fontSize:12,color:"var(--text2)",maxWidth:180}}>{q.questionText||"—"}</td>
-                               <td className={cls}>{q.awarded}/{q.max}</td>
-                               <td style={{fontSize:12,color:"var(--accent2)",fontStyle:"italic",maxWidth:200,fontWeight:500}}>
-                                 {q.redPen ? `✍️ ${q.redPen}` : "—"}
-                               </td>
-                               <td style={{fontSize:12,lineHeight:1.7}}>{q.reasoning||"—"}</td>
-                            </tr>
-                          );
-                        })}
+                        {(() => {
+                          let lastSection = "";
+                          return evaluation.questions.map((q: any, i: number) => {
+                            const counted = q.isCounted !== false;
+                            const cls = !counted ? "marks-zero" : q.awarded === q.max ? "marks-full" : q.awarded === 0 ? "marks-zero" : "marks-partial";
+                            const sectionChanged = q.section && q.section !== lastSection;
+                            if (q.section) lastSection = q.section;
+                            return (
+                                <React.Fragment key={`row-frag-${i}`}>
+                                {sectionChanged && (
+                                  <tr key={`sec-${i}`} style={{ background: "rgba(124,111,255,0.08)" }}>
+                                    <td colSpan={6} style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", letterSpacing: 1.5, textTransform: "uppercase" as const, padding: "8px 12px" }}>
+                                      📂 {q.section}
+                                    </td>
+                                  </tr>
+                                )}
+                                <tr key={`row-${i}`} style={{ opacity: counted ? 1 : 0.45 }}>
+                                  <td>
+                                    <strong style={{ color: counted ? "var(--text)" : "var(--muted)", fontWeight: 500 }}>{q.qNo}</strong>
+                                    {!counted && <span style={{ display: "block", fontSize: 9, background: "rgba(255,90,90,0.15)", color: "#ff5a5a", borderRadius: 4, padding: "1px 5px", marginTop: 3, fontWeight: 600 }}>NOT COUNTED</span>}
+                                  </td>
+                                  <td style={{ fontSize: 11, color: "var(--muted)" }}>{q.pageNo ? `Page ${q.pageNo}` : "—"}</td>
+                                  <td style={{ fontSize: 12, color: "var(--text2)", maxWidth: 180 }}>
+                                    <div>{q.questionText || "—"}</div>
+                                    {q.studentAnswerSummary && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, fontStyle: "italic" }}>↳ {q.studentAnswerSummary}</div>}
+                                  </td>
+                                  <td className={cls}>{q.awarded}/{q.max}</td>
+                                  <td style={{ fontSize: 12, color: "var(--accent2)", fontStyle: "italic", maxWidth: 200, fontWeight: 500 }}>
+                                    {q.redPen ? `✍️ ${q.redPen}` : "—"}
+                                  </td>
+                                  <td style={{ fontSize: 12, lineHeight: 1.7 }}>
+                                    <div>{q.reasoning || "—"}</div>
+                                    {q.improvement && <div style={{ fontSize: 11, color: "#7c6fff", marginTop: 4 }}>💡 {q.improvement}</div>}
+                                  </td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          });
+                        })()}
                       </tbody>
                     </table>
                   </div>
@@ -3352,7 +3559,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           )}
 
           {/* ═══ ANNOUNCEMENTS ═══ */}
-          {page==="announcements" && (
+          {page === "announcements" && (
             <>
               <div className="page-header">
                 <h1 className="page-title">Announcements</h1>
@@ -3360,35 +3567,35 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
               </div>
               <div className="panel">
                 <div className="panel-title"><span>✍️</span> New Announcement</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
-                  <div className="field-group" style={{marginBottom:0}}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Type</label>
-                    <select className="field-input" value={annType} onChange={e=>setAnnType(e.target.value)} style={{cursor:"pointer"}}>
+                    <select className="field-input" value={annType} onChange={e => setAnnType(e.target.value)} style={{ cursor: "pointer" }}>
                       <option value="info">📢 General Info</option>
                       <option value="urgent">🚨 Urgent</option>
                       <option value="event">📅 Event</option>
                       <option value="homework">📚 Homework</option>
                     </select>
                   </div>
-                  <div className="field-group" style={{marginBottom:0}}>
+                  <div className="field-group" style={{ marginBottom: 0 }}>
                     <label className="field-label">Target Audience</label>
-                    <select className="field-input" value={annTarget} onChange={e=>setAnnTarget(e.target.value)} style={{cursor:"pointer"}}>
+                    <select className="field-input" value={annTarget} onChange={e => setAnnTarget(e.target.value)} style={{ cursor: "pointer" }}>
                       <option value="all">All Students</option>
-                      {students.map(s=><option key={s.id} value={String(s.id)}>{s.name}</option>)}
+                      {students.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
                     </select>
                   </div>
                 </div>
                 <div className="field-group">
                   <label className="field-label">Title *</label>
-                  <input className="field-input" value={annTitle} placeholder="e.g. Unit Test on Monday, Holiday Notice…" onChange={e=>setAnnTitle(e.target.value)}/>
+                  <input className="field-input" value={annTitle} placeholder="e.g. Unit Test on Monday, Holiday Notice…" onChange={e => setAnnTitle(e.target.value)} />
                 </div>
-                <div className="field-group" style={{marginBottom:0}}>
+                <div className="field-group" style={{ marginBottom: 0 }}>
                   <label className="field-label">Message *</label>
-                  <textarea className="field-input" rows={4} value={annBody} placeholder="Write your announcement here…" style={{resize:"vertical" as const,lineHeight:1.75,fontWeight:300}} onChange={e=>setAnnBody(e.target.value)}/>
+                  <textarea className="field-input" rows={4} value={annBody} placeholder="Write your announcement here…" style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }} onChange={e => setAnnBody(e.target.value)} />
                 </div>
                 <div className="btn-row">
                   <button onClick={postAnnouncement} className="btn-primary" disabled={loading}>
-                    {loading?"Posting…":"📢 Post Announcement"}
+                    {loading ? "Posting…" : "📢 Post Announcement"}
                   </button>
                 </div>
               </div>
@@ -3397,25 +3604,30 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 {!announcements.length ? (
                   <div className="empty-state"><div className="empty-state-icon">📭</div><p>No announcements yet. Post your first one above.</p></div>
                 ) : (
-                  announcements.map((ann:any)=>(
+                  announcements.map((ann: any) => (
                     <div key={ann.id} className="ann-card">
-                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-                        <span className={`ann-badge ${ann.type==="urgent"?"ann-urgent":ann.type==="event"?"ann-event":ann.type==="homework"?"ann-homework":"ann-info"}`}>
-                          {ann.type==="urgent"?"🚨 Urgent":ann.type==="event"?"📅 Event":ann.type==="homework"?"📚 Homework":"📢 Info"}
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                        <span className={`ann-badge ${ann.type === "urgent" ? "ann-urgent" : ann.type === "event" ? "ann-event" : ann.type === "homework" ? "ann-homework" : "ann-info"}`}>
+                          {ann.type === "urgent" ? "🚨 Urgent" : ann.type === "event" ? "📅 Event" : ann.type === "homework" ? "📚 Homework" : "📢 Info"}
                         </span>
-                        <span style={{fontSize:11,color:"var(--muted)",fontWeight:300,marginLeft:"auto"}}>{new Date(ann.created_at).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}</span>
+                        <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 300, marginLeft: "auto" }}>{new Date(ann.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</span>
                       </div>
-                      <div style={{fontSize:14,fontWeight:600,color:"var(--text)",marginBottom:5}}>{ann.title}</div>
-                      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,fontWeight:300}}>{ann.body}</div>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:10}}>
-                        <span style={{fontSize:11,color:"var(--muted)"}}>→ {ann.target==="all"?"All Students":students.find(s=>String(s.id)===ann.target)?.name||"Student"}</span>
-                        <button onClick={()=>deleteAnnouncement(ann.id)} className="btn-ghost" style={{fontSize:11,padding:"5px 12px"}}>Delete</button>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 5 }}>{ann.title}</div>
+                      <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.7, fontWeight: 300 }}>{ann.body}</div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+                        <span style={{ fontSize: 11, color: "var(--muted)" }}>→ {ann.target === "all" ? "All Students" : students.find(s => String(s.id) === ann.target)?.name || "Student"}</span>
+                        <button onClick={() => deleteAnnouncement(ann.id)} className="btn-ghost" style={{ fontSize: 11, padding: "5px 12px" }}>Delete</button>
                       </div>
                     </div>
                   ))
                 )}
               </div>
             </>
+          )}
+
+          {/* ═══ SMART GLOSSARY CREATOR ═══ */}
+          {page === "glossary" && (
+            <GlossaryPage />
           )}
 
 

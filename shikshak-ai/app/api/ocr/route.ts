@@ -30,9 +30,9 @@ Return ONLY the transcribed text. No explanations, no JSON, no comments.`;
 // ─── Helper: call Groq Vision for one base64 image ───────────────
 async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<string> {
   const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
-  console.log(`[OCR] Sending image: ${sizeKB} KB`);
+  console.log(`[OCR] Sending image to Groq: ${sizeKB} KB`);
   if (sizeKB > 4000) {
-    throw new Error(`Image too large: ${sizeKB} KB (max ~4000 KB). The PDF page resolution is too high.`);
+    throw new Error(`[SIZE_LIMIT_EXCEEDED] Image size ${sizeKB} KB exceeds Groq limit of 4000 KB.`);
   }
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -65,33 +65,57 @@ async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<
   }
 
   const data = await res.json();
-  // Return raw text directly — prompt now asks for plain text, not JSON
   const text = data.choices?.[0]?.message?.content?.trim() || "";
   return text;
 }
 
-// ─── Helper: call Gemini Vision REST API for one base64 image ────────────
-async function geminiOcrPage(imgBase64: string): Promise<string> {
+// ─── Helper: call Gemini Vision REST API for one base64 image (with retry) ────
+async function geminiOcrPage(imgBase64: string, maxRetries = 3): Promise<string> {
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set in .env.local");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
   const payload = {
     contents: [{ parts: [
       { text: "Transcribe the handwriting on this page exactly as it appears. Preserve line breaks and numbering. Return only the transcribed text." },
       { inline_data: { mime_type: "image/jpeg", data: imgBase64 } }
     ]}]
   };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini ${res.status}: ${errText.slice(0, 300)}`);
+
+  let lastErr: Error = new Error("Gemini OCR failed");
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(90_000),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        const isRateLimit = res.status === 429 || res.status === 503;
+        lastErr = new Error(`Gemini ${res.status}: ${errText.slice(0, 300)}`);
+        if (isRateLimit && attempt < maxRetries - 1) {
+          const waitMs = (2 ** attempt) * 5000; // 5s, 10s, 20s
+          console.warn(`[OCR] Gemini rate-limited (attempt ${attempt + 1}). Retrying in ${waitMs / 1000}s...`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+        throw lastErr;
+      }
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+    } catch (e: any) {
+      lastErr = e;
+      const isTransient = /429|503|UNAVAILABLE/i.test(e.message || "");
+      if (isTransient && attempt < maxRetries - 1) {
+        const waitMs = (2 ** attempt) * 5000;
+        console.warn(`[OCR] Gemini transient error (attempt ${attempt + 1}): ${e.message}. Retrying in ${waitMs / 1000}s...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      if (attempt === maxRetries - 1) throw e;
+    }
   }
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  throw lastErr;
 }
 
 
@@ -156,14 +180,29 @@ export async function POST(req: NextRequest) {
           batch.map(async (img, idx) => {
             const pageNum = batchStart + idx + 1;
             try {
-              const text = isGemini
-                ? await geminiOcrPage(img)
-                : await groqOcrPage(img, "image/jpeg");
-              const confidence = isGemini ? 98 : 92;
+              let text = "";
+              let confidence = 92;
+              if (isGemini) {
+                text = await geminiOcrPage(img);
+                confidence = 98;
+              } else {
+                try {
+                  text = await groqOcrPage(img, "image/jpeg");
+                  confidence = 92;
+                } catch (groqErr: any) {
+                  console.warn(`[OCR] Groq failed on page ${pageNum}: ${groqErr.message}. Trying Gemini fallback...`);
+                  if (GEMINI_API_KEY) {
+                    text = await geminiOcrPage(img);
+                    confidence = 98;
+                  } else {
+                    throw groqErr;
+                  }
+                }
+              }
               console.log(`[OCR] ✅ Page ${pageNum}/${totalPages} done (${model})`);
               return { page: pageNum, text, confidence, error: false };
             } catch (e: any) {
-              console.error(`[OCR] ❌ Page ${pageNum} failed: ${e.message}`);
+              console.error(`[OCR] ❌ Page ${pageNum} failed completely: ${e.message}`);
               return { page: pageNum, text: `[Error on page ${pageNum}: ${e.message}]`, confidence: 0, error: true };
             }
           })
@@ -232,22 +271,38 @@ export async function POST(req: NextRequest) {
     // ROUTE 3: Single image + Groq Vision
     // ══════════════════════════════════════════════
     if ((model === "groq-vision" || model === "groq" || model.startsWith("llama")) && model !== "gemini-vision") {
-      if (!GROQ_API_KEY) {
-        return NextResponse.json({ error: "GROQ_API_KEY not set" }, { status: 500 });
-      }
-    try {
+      try {
         if (!imageBase64) return NextResponse.json({ error: "No image data provided" }, { status: 400 });
         // Check base64 size — Groq limit is ~4MB per image
         const sizeKB = Math.round(imageBase64.length * 0.75 / 1024);
         console.log(`[OCR] Image size: ${sizeKB} KB`);
         if (sizeKB > 4000) {
+          if (GEMINI_API_KEY) {
+            console.log("[OCR] Image too large for Groq, falling back to Gemini...");
+            const text = await geminiOcrPage(imageBase64);
+            return NextResponse.json({ status: "success", text, confidence: 98, detections: [] });
+          }
           return NextResponse.json({ error: "Groq OCR Failed", detail: `Image too large (${sizeKB} KB). Max is ~4MB. Reduce PDF scale or use lower DPI.` }, { status: 413 });
         }
-        const text = await groqOcrPage(imageBase64, mimeType || "image/jpeg");
-        return NextResponse.json({ status: "success", text, confidence: 92, detections: [] });
+
+        let text = "";
+        let confidence = 92;
+        try {
+          if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
+          text = await groqOcrPage(imageBase64, mimeType || "image/jpeg");
+        } catch (groqErr: any) {
+          console.warn(`[OCR] Groq failed, falling back to Gemini... Error: ${groqErr.message}`);
+          if (GEMINI_API_KEY) {
+            text = await geminiOcrPage(imageBase64);
+            confidence = 98;
+          } else {
+            throw groqErr;
+          }
+        }
+        return NextResponse.json({ status: "success", text, confidence, detections: [] });
       } catch (e: any) {
-        console.error("[OCR] Groq failed:", e.message);
-        return NextResponse.json({ error: "Groq OCR Failed", detail: e.message }, { status: 503 });
+        console.error("[OCR] Groq/Gemini fallback failed:", e.message);
+        return NextResponse.json({ error: "OCR Failed", detail: e.message }, { status: 503 });
       }
     }
 

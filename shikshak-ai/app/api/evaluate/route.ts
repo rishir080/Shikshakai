@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(300_000), // 5 minutes — large papers need more time
     });
     if (!response.ok) {
       return NextResponse.json(
@@ -28,11 +28,16 @@ export async function POST(req: NextRequest) {
     console.error("Message:", e.message);
     if (e.cause) console.error("Cause:", e.cause);
 
+    const isTimeout = e.name === "TimeoutError" || e.message?.includes("timeout");
+    const isRefused = e.cause?.code === "ECONNREFUSED";
+    const friendlyMsg = isTimeout
+      ? "Evaluation took too long. Try uploading fewer pages or make sure the backend is running."
+      : isRefused
+      ? "Cannot reach Python backend. Please start it with: python main.py"
+      : `[${e.name}] ${e.message}`;
+
     return NextResponse.json(
-      {
-        error: "Python Backend Unreachable",
-        detail: `[${e.name}] ${e.message}. URL: ${PYTHON_BACKEND}. Cause: ${e.cause || 'Unknown'}`,
-      },
+      { error: "Evaluation Failed", detail: friendlyMsg },
       { status: 503 }
     );
   }

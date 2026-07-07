@@ -3,9 +3,18 @@ import os
 import copy
 from typing import List, Dict, Any
 from PIL import Image, ImageDraw, ImageFont
+
+# Raise PIL decompression bomb limit to handle large exam scan images safely
+Image.MAX_IMAGE_PIXELS = 500_000_000
+
 import Levenshtein
 from fpdf import FPDF
 import base64
+
+def _s(text) -> str:
+    """Encode any string to Latin-1 safely for FPDF (replaces unrepresentable chars with '?')."""
+    return str(text or "").encode("latin-1", "replace").decode("latin-1")
+
 
 class ProEvaluator:
     def __init__(self):
@@ -68,7 +77,15 @@ class ProEvaluator:
     def annotate_page(self, img_pil: Image.Image, page_eval: Dict, ocr_detections: List[Dict]) -> Image.Image:
         """
         Draws red pen marks on the image for a specific page.
+        Images are downscaled first if they are too large to prevent memory errors.
         """
+        # Safety: downscale very large images before annotation to prevent memory errors
+        MAX_ANNOTATE_PIXELS = 15_000_000  # 15 MP
+        w, h = img_pil.size
+        if w * h > MAX_ANNOTATE_PIXELS:
+            scale = (MAX_ANNOTATE_PIXELS / (w * h)) ** 0.5
+            img_pil = img_pil.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
         img = img_pil.copy()
         
         # Convert to RGBA for semi-transparent highlights
@@ -150,7 +167,7 @@ class ProEvaluator:
         pdf.add_page()
         pdf.set_font("Arial", "B", 20)
         pdf.set_text_color(30, 30, 80)
-        pdf.cell(0, 15, "ShikshakAI - Professional Evaluation Report", ln=True, align="C")
+        pdf.cell(0, 15, _s("ShikshakAI - Professional Evaluation Report"), ln=True, align="C")
         pdf.ln(10)
         
         # Summary Box
@@ -163,7 +180,7 @@ class ProEvaluator:
         percentage = evaluation_data.get("percentage", 0)
         grade = evaluation_data.get("grade", "N/A")
         
-        pdf.cell(0, 10, f"Final Score: {total_awarded} / {total_possible}  ({percentage}%)  -  Grade: {grade}", border=1, ln=True, fill=True, align="C")
+        pdf.cell(0, 10, _s(f"Final Score: {total_awarded} / {total_possible}  ({percentage}%)  -  Grade: {grade}"), border=1, ln=True, fill=True, align="C")
         pdf.ln(10)
         
         # Detailed Question Table
@@ -172,20 +189,20 @@ class ProEvaluator:
         col_widths = [20, 25, 30, 115]
         headers = ["Q.No", "Marks", "Status", "Feedback"]
         for i, h in enumerate(headers):
-            pdf.cell(col_widths[i], 10, h, border=1, fill=True, align="C")
+            pdf.cell(col_widths[i], 10, _s(h), border=1, fill=True, align="C")
         pdf.ln()
         
         pdf.set_font("Arial", "", 10)
         for q in evaluation_data.get("questions", []):
-            marks_str = f"{q.get('marks_awarded')}/{q.get('marks_total')}"
-            status = q.get("status", "evaluated").capitalize()
-            feedback = q.get("red_pen_comment", "")[:80] # Trim if too long for table
+            marks_str = f"{q.get('marks_awarded', 0)}/{q.get('marks_total', 0)}"
+            status = str(q.get("status", "evaluated")).capitalize()
+            feedback = str(q.get("red_pen_comment", ""))[:80]
             
-            # Row
-            pdf.cell(col_widths[0], 8, str(q.get("question_no")), border=1, align="C")
-            pdf.cell(col_widths[1], 8, marks_str, border=1, align="C")
-            pdf.cell(col_widths[2], 8, status, border=1, align="C")
-            pdf.cell(col_widths[3], 8, feedback, border=1)
+            # Row — all values sanitised through _s()
+            pdf.cell(col_widths[0], 8, _s(q.get("question_no", "")), border=1, align="C")
+            pdf.cell(col_widths[1], 8, _s(marks_str), border=1, align="C")
+            pdf.cell(col_widths[2], 8, _s(status), border=1, align="C")
+            pdf.cell(col_widths[3], 8, _s(feedback), border=1)
             pdf.ln()
             
         pdf.ln(10)
@@ -193,27 +210,24 @@ class ProEvaluator:
         # Mark Loss Analysis
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(180, 0, 0)
-        pdf.cell(0, 10, "Mark Loss Analysis (Where did the student lose marks?)", ln=True)
+        pdf.cell(0, 10, _s("Mark Loss Analysis (Where did the student lose marks?)"), ln=True)
         pdf.set_font("Arial", "", 11)
         pdf.set_text_color(0, 0, 0)
         
         losses = evaluation_data.get("mark_loss_analysis", [])
         if not losses:
-            pdf.cell(0, 8, "No significant marks lost.", ln=True)
+            pdf.cell(0, 8, _s("No significant marks lost."), ln=True)
         else:
             for loss in losses:
-                # Handle unicode safely
-                safe_loss = loss.encode("latin-1", "replace").decode("latin-1")
-                pdf.cell(0, 8, f"  • {safe_loss}", ln=True)
+                pdf.cell(0, 8, _s(f"  - {loss}"), ln=True)
                 
         pdf.ln(10)
         
         # General Feedback
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 10, "Overall Assessor Feedback:", ln=True)
+        pdf.cell(0, 10, _s("Overall Assessor Feedback:"), ln=True)
         pdf.set_font("Arial", "", 11)
-        feedback_safe = evaluation_data.get("overall_feedback", "").encode("latin-1", "replace").decode("latin-1")
-        pdf.multi_cell(0, 8, feedback_safe)
+        pdf.multi_cell(0, 8, _s(evaluation_data.get("overall_feedback", "")))
         
         # =========================================================
         # SUBSEQUENT PAGES: ANNOTATED IMAGES
@@ -223,11 +237,18 @@ class ProEvaluator:
         for i, img in enumerate(annotated_images):
             pdf.add_page()
             pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, f"Annotated Answer Sheet - Page {i+1}", ln=True, align="C")
+            pdf.cell(0, 10, _s(f"Annotated Answer Sheet - Page {i+1}"), ln=True, align="C")
             
             tmp_path = f"temp_annotated_{i}.jpg"
-            # Optimize image size for PDF
-            img.save(tmp_path, "JPEG", quality=75)
+            # Ensure the image is in RGB mode and not too large for PDF embedding
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            # Downscale for PDF if needed (A4 at 150 DPI = 1240x1754 px, plenty for print)
+            MAX_PDF_PIXELS = 8_000_000  # 8MP is plenty for a PDF page
+            if img.width * img.height > MAX_PDF_PIXELS:
+                scale = (MAX_PDF_PIXELS / (img.width * img.height)) ** 0.5
+                img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+            img.save(tmp_path, "JPEG", quality=80)
             temp_files.append(tmp_path)
             
             # Fit image to page width
