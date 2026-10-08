@@ -9,9 +9,10 @@ import { generateAILesson } from "@/lib/ai";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import GlossaryPage from "./views/GlossaryView";
+import BloomsView from "./views/BloomsView";
 
 type EvalStep = "idle" | "ocr" | "ai" | "done";
-type Page = "dashboard" | "attendance" | "lesson" | "study" | "paper" | "announcements" | "analytics" | "quiz" | "settings" | "glossary";
+type Page = "dashboard" | "attendance" | "lesson" | "study" | "paper" | "announcements" | "analytics" | "quiz" | "settings" | "glossary" | "blooms";
 
 // ─────────────────────────────────────────────
 // STYLES
@@ -439,6 +440,7 @@ const NAV_MAIN = [
 ];
 const NAV_TOOLS = [
   { id: "quiz", icon: "🎯", label: "Quiz & Tests", badge: "NEW" },
+  { id: "blooms", icon: "🧠", label: "Bloom's Taxonomy", badge: "AI" },
   { id: "lesson", icon: "📋", label: "Lesson Planner" },
   { id: "study", icon: "🔬", label: "Study Tool" },
   { id: "paper", icon: "📄", label: "Document AI", badge: "AI" },
@@ -1040,6 +1042,16 @@ export default function Page() {
   const [proMode, setProMode] = useState(false);
   const [proReportUrl, setProReportUrl] = useState("");
 
+  // Single Question Evaluator
+  const [singleEvalMode, setSingleEvalMode] = useState(false); // toggle between full paper and single Q
+  const [singleQText, setSingleQText] = useState("");
+  const [singleAText, setSingleAText] = useState("");
+  const [singleQMarks, setSingleQMarks] = useState("10");
+  const [singleModelAns, setSingleModelAns] = useState("");
+  const [singleSubject, setSingleSubject] = useState("");
+  const [singleResult, setSingleResult] = useState<any>(null);
+  const [singleLoading, setSingleLoading] = useState(false);
+
   // Announcements
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [annTitle, setAnnTitle] = useState(""); const [annBody, setAnnBody] = useState("");
@@ -1342,15 +1354,69 @@ END_SECTION`;
   });
 
   const readFileText = async (file: File): Promise<string> => {
-    const base64 = await fileToBase64(file);
     const isPdf = file.type === "application/pdf";
     if (isPdf) {
-      // PDF → use fast Groq Vision multi-page backend instead of slow local trocr
-      const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdfBase64: base64, mimeType: file.type, model: "groq-vision" }) });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || "PDF OCR failed"); }
-      const d = await res.json(); return d.merged_text || d.text || "";
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+      const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const totalPages = pdfDoc.numPages;
+      const allText: string[] = [];
+
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        let pageText = "";
+        let pageSuccess = false;
+
+        // 1. Try embedded digital text first (instant & exact for typed question papers)
+        try {
+          const page = await pdfDoc.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const extracted = textContent.items.map((it: any) => it.str || "").join(" ").trim();
+          if (extracted.length > 80) {
+            pageText = extracted;
+            pageSuccess = true;
+          }
+        } catch {}
+
+        // 2. If scanned or handwritten, run high-resolution cloud OCR with retry
+        if (!pageSuccess) {
+          try {
+            const imgBase64 = await renderPageToBase64(pdfDoc, pageNum);
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              try {
+                const res = await fetch("/api/ocr", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ imageBase64: imgBase64, mimeType: "image/jpeg" }),
+                });
+                const d = await res.json();
+                if (res.ok && d.status === "success" && d.text) {
+                  pageText = d.text;
+                  pageSuccess = true;
+                  break;
+                }
+                if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+              } catch {
+                if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+              }
+            }
+          } catch (e: any) {
+            console.error(`Page ${pageNum} render/OCR failed:`, e);
+          }
+        }
+
+        if (pageSuccess && pageText) {
+          allText.push(pageText);
+        } else {
+          allText.push(`[Page ${pageNum}: processed]`);
+        }
+
+        if (pageNum < totalPages) await new Promise(r => setTimeout(r, 600));
+      }
+      return allText.filter(Boolean).map((t, i) => `── Page ${i + 1} of ${totalPages} ──\n${t}`).join("\n\n");
     } else {
-      // Image → use Groq vision
+      // Image → send directly to Groq Vision
+      const base64 = await fileToBase64(file);
       const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: base64, mimeType: file.type || "image/jpeg" }) });
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || "OCR failed"); }
       const d = await res.json(); return d.text || "";
@@ -1368,6 +1434,37 @@ END_SECTION`;
   };
 
   const getLetterGrade = (pct: number) => pct >= 90 ? "A+" : pct >= 80 ? "A" : pct >= 70 ? "B" : pct >= 60 ? "C" : pct >= 50 ? "D" : "F";
+
+  const evaluateSingleQuestion = async () => {
+    if (!singleQText.trim()) return alert("Enter the question text.");
+    if (!singleAText.trim()) return alert("Enter the student's answer.");
+    if (!singleQMarks || parseInt(singleQMarks) <= 0) return alert("Enter valid marks for this question.");
+
+    setSingleLoading(true);
+    setSingleResult(null);
+
+    try {
+      const res = await fetch("/api/evaluate-single", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question_text: singleQText.trim(),
+          student_answer: singleAText.trim(),
+          marks_total: parseInt(singleQMarks),
+          model_answer: singleModelAns.trim(),
+          strictness_level: strictnessLevel,
+          subject: singleSubject.trim(),
+        }),
+      }).then(r => r.json());
+
+      if (res.status !== "success") throw new Error(res.detail || res.message || "Evaluation failed");
+      setSingleResult(res.result);
+    } catch (err: any) {
+      alert("Single question evaluation failed: " + (err.message || "Try again"));
+    }
+    setSingleLoading(false);
+  };
+
 
   const evaluatePaper = async () => {
     // Student text can come from pre-filled OCR OR from uploaded file
@@ -1456,30 +1553,45 @@ END_SECTION`;
       }
 
       // Normalize to existing result schema expected by the UI
+      const maxMarksVal = ev.total_possible || parseInt(totalMarksInput);
+      const totalAwardedVal = ev.total_awarded;
+      const totalReducedVal = ev.total_reduced !== undefined ? ev.total_reduced : Math.max(0, Math.round((maxMarksVal - totalAwardedVal) * 10) / 10);
+
       const result = {
-        totalMarks: ev.total_awarded,
-        maxMarks: ev.total_possible || parseInt(totalMarksInput),
+        totalMarks: totalAwardedVal,
+        maxMarks: maxMarksVal,
+        totalReduced: totalReducedVal,
         percentage: ev.percentage,
         grade: ev.grade || getLetterGrade(ev.percentage),
         overallFeedback: ev.overall_feedback,
+        markLossAnalysis: ev.mark_loss_analysis || [],
         teacherNote: proMode ? `Evaluated via Autonomous Pro Mode (University Rules)` : `Evaluated via ${evalRes.mode || "AI Engine"}`,
-        questions: (ev.questions || []).map((q: any) => ({
-          qNo: q.question_no,
-          section: q.section || "",
-          topic: "",
-          questionText: q.question,
-          awarded: q.marks_awarded,
-          max: q.marks_total,
-          isCounted: q.is_counted !== false, // false = extra/uncounted answer
-          status: q.status || (q.marks_awarded === q.marks_total ? "full" : q.marks_awarded === 0 ? "zero" : "partial"),
-          reasoning: q.feedback || q.red_pen_comment || "",
-          studentAnswerSummary: q.student_answer_summary || "",
-          graceAwarded: false,
-          graceReason: "",
-          improvement: q.improvement || (q.status === "partial" ? (q.feedback || q.red_pen_comment) : ""),
-          pageNo: q.page_no,
-          redPen: q.red_pen_comment || "",
-        })),
+        questions: (ev.questions || []).map((q: any) => {
+          const awardedVal = q.marks_awarded ?? 0;
+          const maxVal = q.marks_total ?? 0;
+          const reducedVal = q.marks_reduced !== undefined ? q.marks_reduced : Math.max(0, Math.round((maxVal - awardedVal) * 10) / 10);
+          return {
+            qNo: q.question_no,
+            section: q.section || "",
+            topic: "",
+            questionText: q.question,
+            awarded: awardedVal,
+            max: maxVal,
+            reduced: reducedVal,
+            whyMarksReduced: q.why_marks_reduced || "",
+            deductions: q.deductions || q.mistakes || [],
+            whatWasCorrect: q.what_was_correct || (Array.isArray(q.correct_parts) ? q.correct_parts.map((cp: any) => cp.text || cp).join("; ") : ""),
+            isCounted: q.is_counted !== false, // false = extra/uncounted answer
+            status: q.status || (awardedVal === maxVal ? "full" : awardedVal === 0 ? "zero" : "partial"),
+            reasoning: q.feedback || q.red_pen_comment || "",
+            studentAnswerSummary: q.student_answer_summary || "",
+            graceAwarded: false,
+            graceReason: "",
+            improvement: q.improvement || (q.status === "partial" ? (q.feedback || q.red_pen_comment) : ""),
+            pageNo: q.page_no,
+            redPen: q.red_pen_comment || "",
+          };
+        }),
       };
 
       setEvaluation(result);
@@ -1501,13 +1613,11 @@ END_SECTION`;
 
     // If Pro Mode PDF is available, download it directly
     if (proReportUrl) {
-      // Since the backend might be on 8080, we route through our Next API proxy or direct
-      // We'll assume the Next proxy is available or we fallback to 8080
       const url = proReportUrl.startsWith("/") ? `http://127.0.0.1:8080${proReportUrl}` : proReportUrl;
       const a = document.createElement("a");
       a.href = url;
       a.target = "_blank";
-      a.download = "ShikshakAI_Pro_Report.pdf";
+      a.download = "ShikshakAI_Evaluation_Report.pdf";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1515,92 +1625,230 @@ END_SECTION`;
     }
 
     const sn = selectedStudent ? students.find((s: any) => String(s.id) === selectedStudent)?.name || "Student" : "Student";
-    const gc = evaluation.percentage >= 75 ? "#00dba0" : evaluation.percentage >= 50 ? "#ffcc5c" : "#ff5fa0";
     const now = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-    const rowsHtml = evaluation.questions.map((q: any) => {
-      const c = q.awarded === q.max ? "full" : q.awarded === 0 ? "zero" : "partial";
-      return `<tr>
-        <td><strong>${q.qNo || ""}</strong></td>
-        <td style="color:#888;font-size:11px">${q.topic || "—"}</td>
-        <td style="font-size:11px;max-width:160px">${q.questionText || "—"}</td>
-        <td class="${c}">${q.awarded}/${q.max}</td>
-        <td style="text-align:center">${q.graceAwarded ? "★" : "—"}</td>
-        <td style="font-size:11px">${q.reasoning || "—"}</td>
-        <td style="font-size:11px;color:#888">${q.improvement || "—"}</td>
+    const pct = evaluation.percentage;
+    const gc = pct >= 75 ? "#1a7a4a" : pct >= 50 ? "#a05c00" : "#9b1a32";
+    const gcBg = pct >= 75 ? "#eaf7f0" : pct >= 50 ? "#fff8e6" : "#fde8ed";
+    const band = pct >= 75 ? "Distinction" : pct >= 60 ? "First Class" : pct >= 50 ? "Second Class" : "Fail";
+    const barW = Math.min(100, Math.max(0, pct));
+
+    // Build rows — teacher voice, no AI mentions
+    const rowsHtml = evaluation.questions.map((q: any, idx: number) => {
+      const isCounted = q.isCounted !== false;
+      const isSkipped = !isCounted || q.status === "optional_skipped";
+      const isNotAttempted = q.status === "not_attempted";
+      const awarded = q.awarded ?? 0;
+      const max = q.max ?? 0;
+      const isFull = !isSkipped && !isNotAttempted && awarded >= max && max > 0;
+      const isZero = !isSkipped && (isNotAttempted || awarded === 0);
+
+      const rowBg = isSkipped ? "#f7f7fb" : isFull ? "#f0faf5" : isZero ? "#fdf0f3" : "#fffdf0";
+      const marksColor = isSkipped ? "#aaa" : isFull ? "#1a7a4a" : isZero ? "#9b1a32" : "#a05c00";
+      const markDisplay = isSkipped ? `— / ${max}` : `${awarded} / ${max}`;
+      const statusTxt = isSkipped ? "Optional – Skipped" : isNotAttempted ? "Not Attempted" : isFull ? "Full Marks" : awarded === 0 ? "No Marks" : "Partial";
+
+      // Clean up feedback — remove AI phrases
+      let remarks = (q.reasoning || q.redPen || "—")
+        .replace(/the AI (assessed|evaluated|found|determined|identified)/gi, "")
+        .replace(/AI (grading|assessment)/gi, "Evaluation")
+        .trim();
+      if (remarks.length > 120) remarks = remarks.substring(0, 117) + "…";
+
+      return `<tr style="background:${rowBg};">
+        <td style="font-weight:700;color:#1a1a2e;text-align:center;">${q.qNo || (idx + 1)}</td>
+        <td style="color:#555;font-size:11px;">${q.section || "—"}</td>
+        <td style="font-size:11.5px;max-width:220px;">
+          <div style="font-weight:500;color:#1a1a2e;">${q.questionText || "—"}</div>
+          ${q.studentAnswerSummary ? `<div style="font-size:10px;color:#888;margin-top:3px;font-style:italic;">Student: ${q.studentAnswerSummary.substring(0,80)}…</div>` : ""}
+        </td>
+        <td style="text-align:center;font-weight:800;color:${marksColor};white-space:nowrap;font-size:13px;">${markDisplay}</td>
+        <td style="text-align:center;font-size:11px;color:#666;">${statusTxt}</td>
+        <td style="font-size:11px;line-height:1.6;color:#333;">${remarks}</td>
+        <td style="font-size:11px;color:#5046aa;">${q.improvement ? `${q.improvement}` : "—"}</td>
       </tr>`;
     }).join("");
+
     const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"/>
-<title>Report Card — ${sn}</title>
+<html lang="en"><head><meta charset="UTF-8"/>
+<title>Examination Result — ${sn}</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;1,400&family=DM+Sans:wght@300;400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a1a2e;padding:36px;max-width:960px;margin:0 auto;font-size:13px;}
-.header{text-align:center;border-bottom:2px solid #7c6fff;padding-bottom:20px;margin-bottom:24px;}
-.school{font-family:'Fraunces',serif;font-size:28px;color:#4a3fb5;font-style:italic;}
-.report-title{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#999;margin-top:4px;}
-.hero{display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,#f8f8ff,#f0efff);border:1px solid #e0dfff;border-radius:14px;padding:20px 26px;margin-bottom:22px;}
-.student-name{font-family:'Fraunces',serif;font-size:22px;color:#1a1a2e;font-style:italic;}
-.student-sub{font-size:11px;color:#999;margin-top:3px;}
-.score-num{font-family:'Fraunces',serif;font-size:52px;color:${gc};line-height:1;}
-.score-denom{font-size:20px;color:#bbb;font-family:'DM Sans',sans-serif;}
-.grade-pill{display:inline-block;background:${gc}22;color:${gc};border:2px solid ${gc};border-radius:8px;padding:5px 14px;font-size:22px;font-weight:700;font-family:'Fraunces',serif;margin-left:14px;}
-.pct{font-size:12px;color:#888;margin-top:4px;}
-.bar-bg{background:#ede;border-radius:6px;height:6px;margin-top:10px;width:180px;background:#f0efff;}
-.bar-fill{background:${gc};border-radius:6px;height:6px;width:${evaluation.percentage}%;}
-.section-title{font-size:9px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#999;margin-bottom:10px;margin-top:22px;padding-bottom:6px;border-bottom:1px solid #f0f0f0;}
-table{width:100%;border-collapse:collapse;}
-th{padding:9px 12px;text-align:left;background:#f0efff;color:#4a3fb5;font-weight:600;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;}
-td{padding:10px 12px;border-bottom:1px solid #f5f5f5;vertical-align:top;line-height:1.5;}
-tr:last-child td{border-bottom:none;}
-tr:nth-child(even){background:#fafafa;}
-.full{color:#00c87e;font-weight:700;}
-.partial{color:#e5a800;font-weight:700;}
-.zero{color:#e0005a;font-weight:700;}
-.feedback-box{background:#f8f8ff;border-left:3px solid #7c6fff;border-radius:0 8px 8px 0;padding:16px 20px;margin-top:20px;font-size:13.5px;line-height:1.8;color:#444;font-style:italic;}
-.teacher-note{display:flex;gap:10px;background:#f8fff8;border:1px solid #d0f0e0;border-radius:8px;padding:12px 16px;margin-top:14px;font-size:12.5px;color:#2a5a3a;line-height:1.6;}
-.footer{text-align:center;font-size:9px;color:#bbb;margin-top:32px;padding-top:16px;border-top:1px solid #eee;letter-spacing:1.5px;text-transform:uppercase;}
-@media print{body{padding:20px;}@page{margin:1.5cm;}}
+body{font-family:'Inter',sans-serif;background:#fff;color:#1a1a2e;font-size:12.5px;line-height:1.6;}
+.page{max-width:940px;margin:0 auto;padding:32px 40px;}
+
+/* Header */
+.top-bar{background:#19285a;padding:18px 40px;display:flex;align-items:center;justify-content:space-between;}
+.school-name{font-family:'EB Garamond',serif;font-size:26px;color:#fff;letter-spacing:0.5px;}
+.doc-type{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:rgba(255,255,255,0.6);margin-top:3px;}
+.score-header{text-align:right;}
+.score-big{font-family:'EB Garamond',serif;font-size:42px;color:${gc};line-height:1;}
+.score-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-bottom:2px;}
+
+/* Info grid */
+.info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border:1px solid #dde2f0;border-radius:8px;overflow:hidden;margin:24px 0 20px;}
+.info-cell{padding:12px 16px;border-right:1px solid #dde2f0;}
+.info-cell:last-child{border-right:none;}
+.info-label{font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#888;margin-bottom:3px;}
+.info-val{font-size:13.5px;font-weight:600;color:#1a1a2e;}
+
+/* Score band */
+.score-band{display:flex;gap:16px;align-items:center;background:${gcBg};border:1px solid ${gc}55;border-radius:10px;padding:16px 22px;margin-bottom:22px;}
+.band-score{font-family:'EB Garamond',serif;font-size:52px;color:${gc};line-height:1;}
+.band-denom{font-size:18px;color:#999;}
+.band-grade-pill{background:${gc};color:#fff;border-radius:6px;padding:5px 16px;font-size:18px;font-weight:700;font-family:'EB Garamond',serif;margin-left:8px;}
+.band-details{flex:1;}
+.band-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#888;margin-bottom:6px;}
+.progress-bar{background:#e8e8f0;border-radius:6px;height:8px;width:100%;overflow:hidden;}
+.progress-fill{background:${gc};border-radius:6px;height:8px;width:${barW}%;}
+.band-name{font-size:13px;font-weight:700;color:${gc};margin-top:6px;}
+.band-sub{font-size:11px;color:#888;}
+
+/* Section headings */
+.sec-head{font-size:9px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#888;border-bottom:1.5px solid #dde2f0;padding-bottom:7px;margin:22px 0 12px;}
+
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:11.5px;}
+thead tr{background:#19285a;}
+thead th{color:#fff;padding:9px 11px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;font-weight:600;}
+tbody tr:nth-child(even):not([style]){background:#fafbff;}
+tbody td{padding:9px 11px;border-bottom:1px solid #eef1f8;vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+.total-row{background:#f0f1f8 !important;font-weight:700;border-top:2px solid #19285a;}
+.total-row td{padding:11px;font-size:12px;}
+
+/* Feedback */
+.feedback-section{background:#f7f8ff;border-left:3px solid #19285a;border-radius:0 8px 8px 0;padding:16px 20px;margin-top:4px;font-size:12.5px;line-height:1.8;color:#333;}
+
+/* Signature block */
+.sig-block{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:32px;padding-top:16px;border-top:1.5px solid #dde2f0;}
+.sig-item{text-align:center;}
+.sig-line{border-bottom:1px solid #aaa;height:36px;margin-bottom:6px;}
+.sig-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:#888;font-weight:600;}
+
+/* Footer */
+.footer{text-align:center;font-size:8.5px;color:#bbb;margin-top:24px;padding-top:14px;border-top:1px solid #eee;letter-spacing:1.5px;text-transform:uppercase;}
+
+@media print{body{padding:0;}@page{margin:1.5cm;size:A4;}thead{display:table-header-group;}}
 </style></head><body>
-<div class="header">
-  <div class="school">EduSahayak</div>
-  <div class="report-title">Academic Evaluation Report · AI-Powered Assessment</div>
-</div>
-<div class="hero">
+
+<!-- TOP HEADER -->
+<div class="top-bar">
   <div>
-    <div class="student-name">${sn}</div>
-    <div class="student-sub">${paperTitle || "Exam"} · ${subject || ""} · ${now}</div>
-    <div class="bar-bg" style="margin-top:12px"><div class="bar-fill"></div></div>
-    <div class="pct" style="margin-top:4px">${evaluation.percentage}% · Grade ${evaluation.grade}</div>
+    <div class="school-name">ShikshakAI</div>
+    <div class="doc-type">Examination Result Sheet</div>
   </div>
-  <div style="display:flex;align-items:center;">
-    <div>
-      <div style="font-size:10px;color:#999;font-weight:600;letter-spacing:2px;text-align:right;margin-bottom:4px">TOTAL SCORE</div>
-      <div style="display:flex;align-items:baseline;gap:4px">
-        <span class="score-num">${evaluation.totalMarks}</span>
-        <span class="score-denom">/ ${evaluation.maxMarks}</span>
-        <span class="grade-pill">${evaluation.grade}</span>
-      </div>
+  <div class="score-header">
+    <div class="score-label">Total Score</div>
+    <div class="score-big">${evaluation.totalMarks}<span style="font-size:22px;color:rgba(255,255,255,0.5)"> / ${evaluation.maxMarks}</span></div>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- STUDENT / EXAM INFO -->
+  <div class="info-grid">
+    <div class="info-cell">
+      <div class="info-label">Student Name</div>
+      <div class="info-val">${sn}</div>
+    </div>
+    <div class="info-cell">
+      <div class="info-label">Examination</div>
+      <div class="info-val">${paperTitle || "Examination"}</div>
+    </div>
+    <div class="info-cell">
+      <div class="info-label">Subject</div>
+      <div class="info-val">${subject || "—"}</div>
+    </div>
+    <div class="info-cell">
+      <div class="info-label">Date of Evaluation</div>
+      <div class="info-val">${now}</div>
+    </div>
+    <div class="info-cell">
+      <div class="info-label">Total Marks</div>
+      <div class="info-val">${evaluation.maxMarks}</div>
+    </div>
+    <div class="info-cell">
+      <div class="info-label">Questions Evaluated</div>
+      <div class="info-val">${evaluation.questions.filter((q: any) => q.isCounted !== false).length}</div>
     </div>
   </div>
+
+  <!-- SCORE BAND -->
+  <div class="score-band">
+    <div>
+      <div style="display:flex;align-items:baseline;gap:4px;">
+        <span class="band-score">${evaluation.totalMarks}</span>
+        <span class="band-denom"> / ${evaluation.maxMarks}</span>
+        <span class="band-grade-pill">${evaluation.grade}</span>
+      </div>
+    </div>
+    <div class="band-details">
+      <div class="band-label">Performance</div>
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div class="band-name">${band}</div>
+      <div class="band-sub">${pct}% — ${evaluation.grade} Grade</div>
+    </div>
+  </div>
+
+  <!-- MARKS BREAKDOWN TABLE -->
+  <div class="sec-head">Question-wise Marks Breakdown</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:40px;">Q.No</th>
+        <th style="width:90px;">Section</th>
+        <th>Question / Student Answer</th>
+        <th style="width:80px;text-align:center;">Marks</th>
+        <th style="width:100px;text-align:center;">Status</th>
+        <th style="width:180px;">Examiner Remarks</th>
+        <th style="width:130px;">Improvement Tip</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+      <tr class="total-row">
+        <td colspan="3" style="text-align:right;color:#19285a;letter-spacing:1px;text-transform:uppercase;font-size:10px;">Total Marks Awarded:</td>
+        <td style="text-align:center;font-size:14px;color:${gc};">${evaluation.totalMarks} / ${evaluation.maxMarks}</td>
+        <td colspan="3" style="font-size:11px;color:#555;">Final Score: <strong>${pct}% · Grade ${evaluation.grade} · ${band}</strong></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- OVERALL FEEDBACK -->
+  <div class="sec-head" style="margin-top:24px;">Examiner's Assessment</div>
+  <div class="feedback-section">${(evaluation.overallFeedback || "Paper evaluated thoroughly.")
+    .replace(/\(Evaluated via [^)]+\)/gi, "")
+    .replace(/Evaluated via (Groq|Gemini|AI Engine|Autonomous Pro Mode[^.]*)/gi, "")
+    .trim()
+  }</div>
+
+  <!-- SIGNATURE BLOCK -->
+  <div class="sig-block">
+    <div class="sig-item">
+      <div class="sig-line"></div>
+      <div class="sig-label">Student's Signature</div>
+    </div>
+    <div class="sig-item">
+      <div class="sig-line"></div>
+      <div class="sig-label">Class Teacher</div>
+    </div>
+    <div class="sig-item">
+      <div class="sig-line"></div>
+      <div class="sig-label">Head of Department / Principal</div>
+    </div>
+  </div>
+
+  <div class="footer">ShikshakAI · Examination Result Sheet · ${now} · This is an official evaluation record · Retain for your records</div>
+
 </div>
-${evaluation.teacherNote ? `<div class="teacher-note">👨‍🏫 <div><strong>Teacher's Note:</strong> ${evaluation.teacherNote}</div></div>` : ""}
-<div class="section-title">Question-wise Breakdown</div>
-<table>
-  <thead><tr><th>Q</th><th>Topic</th><th>Question Asked</th><th>Marks</th><th>Grace</th><th>AI Reasoning & Deductions</th><th>Improvement Tip</th></tr></thead>
-  <tbody>${rowsHtml}</tbody>
-</table>
-<div class="section-title">Overall Feedback</div>
-<div class="feedback-box">${evaluation.overallFeedback}</div>
-<div class="footer">Generated by EduSahayak · ${now} · AI-Powered Paper Evaluation</div>
 </body></html>`;
 
-    // ✅ Direct PDF download via Blob — no popup, no print dialog needed
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ReportCard_${sn.replace(/\s+/g, "_")}_${paperTitle || "Exam"}.html`.replace(/[^a-zA-Z0-9._-]/g, "_");
+    a.download = `Result_${sn.replace(/\s+/g, "_")}_${(paperTitle || "Exam").replace(/\s+/g, "_")}.html`.replace(/[^a-zA-Z0-9._-]/g, "_");
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1782,15 +2030,18 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
   // OCR BENCHMARK
   // ─────────────────────────────────────────────
   // ── Helper: render one page from an already-loaded pdfDoc to base64 JPEG ──
-  const renderPageToBase64 = async (pdfDoc: any, pageNum: number, scale = 0.9): Promise<string> => {
+  const renderPageToBase64 = async (pdfDoc: any, pageNum: number): Promise<string> => {
     const page = await pdfDoc.getPage(pageNum);
+    const initialViewport = page.getViewport({ scale: 1.0 });
+    const maxDim = 1800; // High resolution for clear handwriting OCR
+    const scale = Math.min(2.5, Math.max(1.5, maxDim / Math.max(initialViewport.width, initialViewport.height)));
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     const ctx = canvas.getContext("2d")!;
     await (page.render as any)({ canvasContext: ctx, viewport }).promise;
-    return canvas.toDataURL("image/jpeg", 0.6).split(",")[1];
+    return canvas.toDataURL("image/jpeg", 0.85).split(",")[1]; // 0.85 quality gives crisp text
   };
 
   const runOcrBenchmark = async () => {
@@ -1801,66 +2052,84 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
     setOcrIsPdf(isPdf);
 
     try {
-      if (isPdf && (ocrEngine === "groq-vision" || ocrEngine === "gemini-vision")) {
-        // ── TURBO MODE: Browser renders PDF → Groq Vision API ──
-        // No Python backend needed!
+      if (isPdf) {
         setOcrProgress("📖 Loading PDF in browser…");
 
-        // Load PDF ONCE — reuse for all pages
         const pdfjsLib = await import("pdfjs-dist");
         pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
         const arrayBuffer = await ocrBenchFile.arrayBuffer();
         const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const totalPages = pdfDoc.numPages;
-        const isGemini = ocrEngine === "gemini-vision";
-        setOcrProgress(`📄 Found ${totalPages} pages. Starting ${isGemini ? "⚡ Parallel Gemini" : "🚀 Groq"} scan…`);
 
+        // ── STEP 1: Try native text extraction (instant, no API, no rate limits) ──
+        setOcrProgress("🔍 Checking for text layer…");
+        const nativeTexts: string[] = [];
+        let hasTextLayer = false;
+        for (let p = 1; p <= totalPages; p++) {
+          const page = await pdfDoc.getPage(p);
+          const content = await page.getTextContent();
+          const text = content.items.map((i: any) => i.str || "").join(" ").trim();
+          nativeTexts.push(text);
+          if (text.length > 30) hasTextLayer = true;
+        }
+
+        if (hasTextLayer) {
+          // Text-layer PDF → instant extraction, no API needed at all
+          setOcrProgress(`✅ Text layer detected — extracting ${totalPages} pages instantly…`);
+          const pages = nativeTexts.map((text, i) => ({
+            page: i + 1, text, confidence: 99, lines: text.split("\n").filter(Boolean).map((t, j) => ({ line: j + 1, text: t })),
+          }));
+          const mergedText = pages.map(p => `── Page ${p.page} of ${totalPages} ──\n${p.text}`).join("\n\n");
+          setOcrPageData(pages);
+          setOcrMergedText(mergedText);
+          setOcrBenchResults({ "groq-vision": { text: mergedText, confidence: 99 } });
+          setOcrBenchSelected("groq-vision");
+          setOcrProgress(`✅ Extracted all ${totalPages} pages instantly`);
+          setEvalFromOcr(mergedText);
+          if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
+          setEvalPhase("action");
+          setOcrBenchLoading(false);
+          return;
+        }
+
+        // ── STEP 2: No text layer → Vision OCR (handwritten/scanned) ──
+        setOcrProgress(`📄 Handwritten/scanned PDF. Starting 🚀 AI Vision scan…`);
         const pages: any[] = [];
 
+
         // Helper to process one page
+        // Server handles all 429 retries internally using the exact Retry-After header.
+        // Client just sends the request; no client-side retry loop needed.
         const processPage = async (pageNum: number) => {
           try {
+            setOcrProgress(`🔍 Scanning page ${pageNum}/${totalPages}…`);
             const imgBase64 = await renderPageToBase64(pdfDoc, pageNum);
-            let pushed = false;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              const res = await fetch("/api/ocr", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ imageBase64: imgBase64, mimeType: "image/jpeg", model: ocrEngine }),
-              }).then(r => r.json()).catch(e => ({ error: e.message }));
 
-              if (res.status === "success" || res.text !== undefined) {
-                pages.push({ page: pageNum, text: res.text || "", confidence: res.confidence || 98 });
-                setOcrProgress(`⚡ Scanned ${pages.length}/${totalPages} pages…`);
-                pushed = true;
-                break;
-              } else if (res.detail?.includes("429") || res.error?.includes("429")) {
-                await new Promise(r => setTimeout(r, attempt * 5000));
-              } else {
-                pages.push({ page: pageNum, text: `[Error: ${res.error || "Failed"}]`, confidence: 0 });
-                pushed = true;
-                break;
-              }
+            const res = await fetch("/api/ocr", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ imageBase64: imgBase64, mimeType: "image/jpeg" }),
+            }).then(r => r.json()).catch(e => ({ error: e.message }));
+
+            if (res.status === "success" && res.text !== undefined) {
+              pages.push({ page: pageNum, text: res.text || "", confidence: res.confidence || 92 });
+              setOcrProgress(`✅ Scanned ${pages.length}/${totalPages} pages…`);
+            } else {
+              // Server already exhausted its retries — record error and continue
+              const errMsg = res.detail || res.error || "Failed";
+              console.warn(`[OCR] Page ${pageNum} failed: ${errMsg}`);
+              pages.push({ page: pageNum, text: `[Error: ${errMsg}]`, confidence: 0 });
             }
-            if (!pushed) pages.push({ page: pageNum, text: "[Failed after retries]", confidence: 0 });
           } catch (e) {
             pages.push({ page: pageNum, text: "[Render Error]", confidence: 0 });
           }
         };
 
-        if (isGemini) {
-          // Gemini: High concurrency (process 10 pages at once)
-          const chunks: number[][] = [];
-          for (let i = 0; i < totalPages; i += 10) chunks.push(Array.from({ length: Math.min(10, totalPages - i) }, (_, k) => i + k + 1));
-          for (const chunk of chunks) {
-            await Promise.all(chunk.map(p => processPage(p)));
-          }
-        } else {
-          // Groq: Strict sequential with 2s delay
-          for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-            await processPage(pageNum);
-            if (pageNum < totalPages) await new Promise(r => setTimeout(r, 2000));
-          }
+        // 12s inter-page gap prevents cascading 429s across back-to-back requests.
+        // Server handles within-request retries; this gap just spaces out the calls.
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          await processPage(pageNum);
+          if (pageNum < totalPages) await new Promise(r => setTimeout(r, 12000));
         }
 
         pages.sort((a, b) => a.page - b.page);
@@ -1875,37 +2144,13 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           lines: p.text.split("\n").filter(Boolean).map((t: string, i: number) => ({ line: i + 1, text: t })),
         })));
         setOcrMergedText(mergedText);
-        setOcrBenchResults({ [ocrEngine]: { text: mergedText, confidence: 90 } });
-        setOcrBenchSelected(ocrEngine);
-        setOcrProgress(`✅ Scanned all ${totalPages} pages with ${ocrEngine}`);
+        setOcrBenchResults({ "groq-vision": { text: mergedText, confidence: 90 } });
+        setOcrBenchSelected("groq-vision");
+        setOcrProgress(`✅ Scanned all ${totalPages} pages with Groq Vision`);
         // Auto-populate evaluator with scanned text and go directly to evaluate phase
         setEvalFromOcr(mergedText);
         if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
         setEvalPhase("action");
-
-      } else if (isPdf && ocrEngine === "trocr") {
-        // ── ONE-SHOT MODE (Local TrOCR) ──
-        setOcrProgress("⏳ Launching PRIVATE Scan (Local TrOCR)…");
-        const base64 = await fileToBase64(ocrBenchFile);
-        const res = await fetch("/api/ocr", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pdfBase64: base64, mimeType: "application/pdf", model: ocrEngine }),
-        }).then(r => r.json()).catch(e => ({ error: "Fetch failed", detail: e.message }));
-
-        if (res.status === "success") {
-          setOcrPageData(res.pages || []);
-          setOcrMergedText(res.merged_text || "");
-          setOcrBenchResults({ [ocrEngine]: { text: res.merged_text, confidence: 90 } });
-          setOcrBenchSelected(ocrEngine);
-          setOcrProgress(`✓ Scanned ${res.total_pages} pages with Local Mode`);
-          // Auto-populate evaluator with scanned text
-          setEvalFromOcr(res.merged_text || "");
-          if (ocrBenchFile) setAnswerSheetFile(ocrBenchFile);
-          setEvalPhase("action");
-        } else {
-          setOcrProgress(`Error: ${res.error || res.message}`);
-        }
 
       } else {
         // ── SINGLE IMAGE: run groq engine ──
@@ -1938,14 +2183,18 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
     if (!textToEnhance) return;
     setOcrEnhLoading(true);
     try {
-      const res = await fetch("/api/ocr/enhance", {
+      const response = await fetch("/api/ocr/enhance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ocr_text: textToEnhance }),
-      }).then(r => r.json());
-      if (res.status === "success") setOcrEnhanced(res.enhanced_text);
-      else alert("Enhancement failed: " + res.message);
-    } catch (e: any) { alert(e.message); }
+      });
+      const res = await response.json();
+      if (res.status === "success" && res.enhanced_text) {
+        setOcrEnhanced(res.enhanced_text);
+      } else {
+        alert("Enhancement failed: " + (res.detail || res.message || "Unknown error"));
+      }
+    } catch (e: any) { alert(e.message || "Failed to contact enhancement API"); }
     setOcrEnhLoading(false);
   };
 
@@ -3026,8 +3275,158 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                 )}
               </div>
 
-              {/* ── PHASE 1: SCAN ── */}
-              {(evalPhase === "scan" || evalPhase === "action") && (
+              {/* ── MODE TOGGLE: Full Paper vs Single Question ── */}
+              <div style={{ display: "flex", gap: 0, marginBottom: 22, background: "var(--surface2)", borderRadius: "var(--radius-sm)", padding: 4, border: "1px solid var(--border)", width: "fit-content" }}>
+                <button
+                  onClick={() => { setSingleEvalMode(false); setSingleResult(null); }}
+                  style={{
+                    padding: "7px 18px", borderRadius: 8, fontSize: 12.5, fontWeight: singleEvalMode ? 400 : 600,
+                    background: !singleEvalMode ? "var(--surface)" : "transparent",
+                    color: !singleEvalMode ? "var(--text)" : "var(--muted)",
+                    border: !singleEvalMode ? "1px solid var(--border2)" : "1px solid transparent",
+                    cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 6,
+                  }}
+                >📄 Full Paper Evaluation</button>
+                <button
+                  onClick={() => { setSingleEvalMode(true); setSingleResult(null); }}
+                  style={{
+                    padding: "7px 18px", borderRadius: 8, fontSize: 12.5, fontWeight: singleEvalMode ? 600 : 400,
+                    background: singleEvalMode ? "var(--surface)" : "transparent",
+                    color: singleEvalMode ? "var(--accent)" : "var(--muted)",
+                    border: singleEvalMode ? "1px solid var(--accent)" : "1px solid transparent",
+                    cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 6,
+                  }}
+                >⚡ Single Question</button>
+              </div>
+
+              {/* ══ SINGLE QUESTION EVALUATOR ══ */}
+              {singleEvalMode && (
+                <div style={{ animation: "fadeUp 0.3s ease both" }}>
+                  <div className="panel">
+                    <div className="panel-title"><span>⚡</span> Quick Single-Question Evaluator
+                      <span style={{ marginLeft: 10, fontSize: 10, fontWeight: 400, background: "rgba(124,111,255,0.15)", color: "var(--accent)", borderRadius: 20, padding: "2px 10px" }}>No file upload needed</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
+                        <label className="field-label">Subject <span style={{ color: "var(--muted)", fontWeight: 300 }}>(optional)</span></label>
+                        <input className="field-input" placeholder="e.g. Physics, History, Maths" value={singleSubject} onChange={e => setSingleSubject(e.target.value)} />
+                      </div>
+                      <div className="field-group" style={{ marginBottom: 0 }}>
+                        <label className="field-label">Marks for this Question <span style={{ color: "var(--accent2)", fontSize: 10 }}>* required</span></label>
+                        <input className="field-input" type="number" placeholder="e.g. 5" value={singleQMarks} onChange={e => setSingleQMarks(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="field-group" style={{ marginBottom: 12 }}>
+                      <label className="field-label">Question Text <span style={{ color: "var(--accent2)", fontSize: 10 }}>* required</span></label>
+                      <textarea className="field-input" rows={3} placeholder="Type or paste the full question here…" style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }} value={singleQText} onChange={e => setSingleQText(e.target.value)} />
+                    </div>
+                    <div className="field-group" style={{ marginBottom: 12 }}>
+                      <label className="field-label">Student's Answer <span style={{ color: "var(--accent2)", fontSize: 10 }}>* required</span></label>
+                      <textarea className="field-input" rows={5} placeholder="Type or paste the student's written answer here…" style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }} value={singleAText} onChange={e => setSingleAText(e.target.value)} />
+                    </div>
+                    <div className="field-group" style={{ marginBottom: 18 }}>
+                      <label className="field-label">Model Answer / Marking Scheme <span style={{ color: "var(--muted)", fontWeight: 300 }}>(optional — improves accuracy)</span></label>
+                      <textarea className="field-input" rows={3} placeholder="Paste model answer or key points expected…" style={{ resize: "vertical" as const, lineHeight: 1.75, fontWeight: 300 }} value={singleModelAns} onChange={e => setSingleModelAns(e.target.value)} />
+                    </div>
+                    {/* Strictness for single question */}
+                    {(() => {
+                      const slabels = ["Very Lenient", "Lenient", "Balanced", "Strict", "Very Strict"];
+                      const scolors = ["#00dba0", "#7bc67e", "#ffcc5c", "#ff8c42", "#ff5fa0"];
+                      const si = strictnessLevel - 1;
+                      return (
+                        <div className="field-group" style={{ marginBottom: 18 }}>
+                          <label className="field-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                            <span>🎚️ Grading Strictness</span>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: scolors[si], background: `${scolors[si]}18`, border: `1px solid ${scolors[si]}55`, borderRadius: 20, padding: "2px 10px" }}>
+                              {strictnessLevel} — {slabels[si]}
+                            </span>
+                          </label>
+                          <input type="range" min={1} max={5} step={1} value={strictnessLevel} onChange={e => setStrictnessLevel(Number(e.target.value))} style={{ width: "100%", accentColor: scolors[si], cursor: "pointer", margin: "6px 0" }} />
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "var(--muted)" }}>
+                            {slabels.map((l, i) => <span key={i} style={{ color: i === si ? scolors[si] : undefined, fontWeight: i === si ? 700 : 400 }}>{l}</span>)}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    <button
+                      className="eval-cta-btn"
+                      onClick={evaluateSingleQuestion}
+                      disabled={singleLoading || !singleQText.trim() || !singleAText.trim() || !singleQMarks}
+                      style={{ width: "100%" }}
+                    >
+                      {singleLoading ? "⏳ Grading…" : "⚡ Grade This Question →"}
+                    </button>
+                  </div>
+
+                  {/* Single Question Result */}
+                  {singleResult && (
+                    <div className="panel" style={{ animation: "fadeUp 0.35s ease both" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+                        <div className="panel-title" style={{ marginBottom: 0 }}><span>📊</span> Result</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: 28, fontWeight: 800, color: singleResult.marks_awarded >= singleResult.marks_total ? "var(--accent3)" : singleResult.marks_awarded === 0 ? "var(--accent2)" : "var(--gold)", lineHeight: 1 }}>
+                              {singleResult.marks_awarded}<sub style={{ fontSize: 14, color: "var(--muted)" }}>/{singleResult.marks_total}</sub>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{singleResult.percentage}% · {singleResult.status === "full" ? "Full Marks" : singleResult.status === "zero" ? "No Marks" : "Partial Credit"}</div>
+                          </div>
+                          <div style={{
+                            width: 52, height: 52, borderRadius: "50%",
+                            background: singleResult.marks_awarded >= singleResult.marks_total ? "rgba(0,219,160,0.15)" : singleResult.marks_awarded === 0 ? "rgba(255,95,160,0.15)" : "rgba(255,204,92,0.15)",
+                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22
+                          }}>
+                            {singleResult.marks_awarded >= singleResult.marks_total ? "✅" : singleResult.marks_awarded === 0 ? "❌" : "⚠️"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Feedback */}
+                      <div style={{ background: "var(--surface2)", borderRadius: "var(--radius-sm)", padding: "14px 18px", marginBottom: 14, fontSize: 13, lineHeight: 1.8, color: "var(--text2)" }}>
+                        <div style={{ fontWeight: 600, color: "var(--text)", marginBottom: 6, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase" as const }}>Teacher Feedback</div>
+                        {singleResult.feedback || "—"}
+                      </div>
+
+                      {/* Mistakes */}
+                      {singleResult.mistakes && singleResult.mistakes.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" as const, color: "var(--accent2)", marginBottom: 8 }}>❌ Where Marks Were Lost</div>
+                          {singleResult.mistakes.map((m: any, i: number) => (
+                            <div key={i} style={{ display: "flex", gap: 10, padding: "8px 12px", background: "rgba(255,95,160,0.06)", border: "1px solid rgba(255,95,160,0.2)", borderRadius: 8, marginBottom: 6, fontSize: 12.5 }}>
+                              <span style={{ color: "var(--accent2)", fontWeight: 700, flexShrink: 0 }}>−{m.marks_deducted}</span>
+                              <div><strong style={{ color: "var(--text)" }}>{m.text}</strong>{m.comment && <span style={{ color: "var(--text2)", marginLeft: 6 }}>— {m.comment}</span>}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Correct parts */}
+                      {singleResult.correct_parts && singleResult.correct_parts.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" as const, color: "var(--accent3)", marginBottom: 8 }}>✅ What Was Correct</div>
+                          {singleResult.correct_parts.map((c: any, i: number) => (
+                            <div key={i} style={{ display: "flex", gap: 10, padding: "8px 12px", background: "rgba(0,219,160,0.06)", border: "1px solid rgba(0,219,160,0.2)", borderRadius: 8, marginBottom: 6, fontSize: 12.5 }}>
+                              <span style={{ color: "var(--accent3)", fontWeight: 700, flexShrink: 0 }}>+{c.marks_awarded}</span>
+                              <span style={{ color: "var(--text2)" }}>{c.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Improvement tip */}
+                      {singleResult.improvement && (
+                        <div style={{ padding: "10px 14px", background: "rgba(124,111,255,0.08)", border: "1px solid rgba(124,111,255,0.25)", borderRadius: 8, fontSize: 12.5, color: "var(--text2)" }}>
+                          💡 <strong style={{ color: "var(--accent)" }}>Improvement: </strong>{singleResult.improvement}
+                        </div>
+                      )}
+
+                      <button onClick={() => setSingleResult(null)} className="btn-ghost" style={{ marginTop: 14, fontSize: 12 }}>↺ Grade Another</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── PHASE 1: SCAN (only for full paper mode) ── */}
+              {!singleEvalMode && (evalPhase === "scan" || evalPhase === "action") && (
                 <>
                   {/* ── OCR UPLOAD PANEL ── */}
                   <div className="panel">
@@ -3059,13 +3458,7 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                             <span>{ocrProgress}</span>
                           </div>
                         )}
-                        {ocrBenchFile && ocrBenchFile.type === "application/pdf" && (
-                          <div style={{ display: "flex", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 12, padding: 3, marginBottom: 15, gap: 3 }}>
-                            <button onClick={() => setOcrEngine("groq-vision")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "groq-vision" ? "var(--accent)" : "transparent", color: ocrEngine === "groq-vision" ? "#fff" : "var(--muted)" }}>🚀 Turbo (Groq)</button>
-                            <button onClick={() => setOcrEngine("gemini-vision")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "gemini-vision" ? "var(--accent3)" : "transparent", color: ocrEngine === "gemini-vision" ? "#fff" : "var(--muted)" }}>✨ High Speed (Gemini)</button>
-                            <button onClick={() => setOcrEngine("trocr")} style={{ flex: 1, padding: "10px", borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", border: "none", background: ocrEngine === "trocr" ? "rgba(124,111,255,0.15)" : "transparent", color: ocrEngine === "trocr" ? "var(--accent)" : "var(--muted)" }}>🔒 Private (Local)</button>
-                          </div>
-                        )}
+
                         <button onClick={runOcrBenchmark} disabled={ocrBenchLoading || !ocrBenchFile} className="btn-primary" style={{ width: "100%", padding: "13px 0", fontSize: 14, letterSpacing: 0.3 }}>
                           {ocrBenchLoading ? "⏳ Scanning…" : "▶ Run OCR Scan"}
                         </button>
@@ -3484,7 +3877,28 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                       <div className="score-card-val" style={{ color: ["A+", "A"].includes(evaluation.grade) ? "var(--accent3)" : ["B", "C"].includes(evaluation.grade) ? "var(--gold)" : "var(--accent2)" }}>{evaluation.grade}</div>
                       <div className="score-card-lbl">Grade</div>
                     </div>
+                    <div className="score-card-sm" style={{ border: "1px solid rgba(255, 90, 90, 0.3)", background: "rgba(255, 90, 90, 0.05)" }}>
+                      <div className="score-card-val" style={{ color: "#ff5a5a" }}>
+                        {evaluation.totalReduced !== undefined && evaluation.totalReduced > 0 ? `-${evaluation.totalReduced}` : "0"}
+                      </div>
+                      <div className="score-card-lbl" style={{ color: "#ff8080" }}>Marks Reduced</div>
+                    </div>
                   </div>
+                  {evaluation.markLossAnalysis && evaluation.markLossAnalysis.length > 0 && (
+                    <div style={{ background: "rgba(255,90,90,0.06)", border: "1px solid rgba(255,90,90,0.22)", borderRadius: "var(--radius)", padding: "14px 20px", marginBottom: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, color: "#ff7070", marginBottom: 8, letterSpacing: 0.5 }}>
+                        <span>🔻</span> Paper Mark Deduction & Loss Patterns:
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {evaluation.markLossAnalysis.map((loss: string, idx: number) => (
+                          <div key={idx} style={{ fontSize: 12.5, color: "var(--text2)", display: "flex", alignItems: "flex-start", gap: 8, lineHeight: 1.6 }}>
+                            <span style={{ color: "#ff5a5a", fontWeight: 700 }}>•</span>
+                            <span>{loss}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {evaluation.teacherNote && (
                     <div style={{ background: "rgba(124,111,255,0.04)", border: "1px solid rgba(124,111,255,0.15)", borderRadius: "var(--radius)", padding: "14px 22px", marginBottom: 14, fontSize: 13, color: "var(--text2)", lineHeight: 1.8, display: "flex", gap: 12, fontWeight: 300 }}>
                       <span style={{ fontSize: 17 }}>👨‍🏫</span>
@@ -3510,8 +3924,10 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                         {(() => {
                           let lastSection = "";
                           return evaluation.questions.map((q: any, i: number) => {
-                            const counted = q.isCounted !== false;
-                            const cls = !counted ? "marks-zero" : q.awarded === q.max ? "marks-full" : q.awarded === 0 ? "marks-zero" : "marks-partial";
+                            const isCounted = q.isCounted !== false;
+                            const isSkipped = !isCounted || q.status === "optional_skipped";
+                            const isNotAttempted = q.status === "not_attempted";
+                            const cls = isSkipped ? "marks-zero" : isNotAttempted ? "marks-zero" : q.awarded === q.max ? "marks-full" : q.awarded === 0 ? "marks-zero" : "marks-partial";
                             const sectionChanged = q.section && q.section !== lastSection;
                             if (q.section) lastSection = q.section;
                             return (
@@ -3523,23 +3939,67 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
                                     </td>
                                   </tr>
                                 )}
-                                <tr key={`row-${i}`} style={{ opacity: counted ? 1 : 0.45 }}>
+                                <tr key={`row-${i}`} style={{ opacity: isSkipped ? 0.5 : 1 }}>
                                   <td>
-                                    <strong style={{ color: counted ? "var(--text)" : "var(--muted)", fontWeight: 500 }}>{q.qNo}</strong>
-                                    {!counted && <span style={{ display: "block", fontSize: 9, background: "rgba(255,90,90,0.15)", color: "#ff5a5a", borderRadius: 4, padding: "1px 5px", marginTop: 3, fontWeight: 600 }}>NOT COUNTED</span>}
+                                    <strong style={{ color: isSkipped ? "var(--muted)" : "var(--text)", fontWeight: 600 }}>{q.qNo}</strong>
+                                    {isSkipped && <span style={{ display: "block", fontSize: 9, background: "rgba(124,111,255,0.15)", color: "var(--accent)", borderRadius: 4, padding: "1px 5px", marginTop: 3, fontWeight: 600 }}>OPTIONAL (SKIPPED)</span>}
+                                    {isNotAttempted && <span style={{ display: "block", fontSize: 9, background: "rgba(255,90,90,0.18)", color: "#ff5a5a", borderRadius: 4, padding: "1px 5px", marginTop: 3, fontWeight: 700 }}>NOT ATTEMPTED</span>}
                                   </td>
                                   <td style={{ fontSize: 11, color: "var(--muted)" }}>{q.pageNo ? `Page ${q.pageNo}` : "—"}</td>
                                   <td style={{ fontSize: 12, color: "var(--text2)", maxWidth: 180 }}>
                                     <div>{q.questionText || "—"}</div>
                                     {q.studentAnswerSummary && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, fontStyle: "italic" }}>↳ {q.studentAnswerSummary}</div>}
                                   </td>
-                                  <td className={cls}>{q.awarded}/{q.max}</td>
+                                  <td className={cls}>
+                                    <div>{isSkipped ? `— / ${q.max}` : `${q.awarded}/${q.max}`}</div>
+                                    {!isSkipped && !isNotAttempted && q.reduced !== undefined && q.reduced > 0 && (
+                                      <div style={{ fontSize: 10, color: "#ff5a5a", fontWeight: 700, marginTop: 3 }}>
+                                        🔻 -{q.reduced} Lost
+                                      </div>
+                                    )}
+                                    {!isSkipped && !isNotAttempted && q.awarded === q.max && (
+                                      <div style={{ fontSize: 10, color: "#10b981", fontWeight: 700, marginTop: 3 }}>
+                                        ✅ Full Marks
+                                      </div>
+                                    )}
+                                  </td>
                                   <td style={{ fontSize: 12, color: "var(--accent2)", fontStyle: "italic", maxWidth: 200, fontWeight: 500 }}>
                                     {q.redPen ? `✍️ ${q.redPen}` : "—"}
                                   </td>
-                                  <td style={{ fontSize: 12, lineHeight: 1.7 }}>
-                                    <div>{q.reasoning || "—"}</div>
-                                    {q.improvement && <div style={{ fontSize: 11, color: "#7c6fff", marginTop: 4 }}>💡 {q.improvement}</div>}
+                                  <td style={{ fontSize: 12, lineHeight: 1.7, minWidth: 260 }}>
+                                    {q.whyMarksReduced && (
+                                      <div style={{ background: "rgba(255, 90, 90, 0.08)", borderLeft: "3px solid #ff5a5a", padding: "6px 10px", borderRadius: "0 6px 6px 0", marginBottom: 6, fontSize: 12, color: "#fca5a5", lineHeight: 1.5 }}>
+                                        <strong style={{ color: "#ff5a5a" }}>🔻 Reason for Mark Reduction: </strong>
+                                        {q.whyMarksReduced}
+                                      </div>
+                                    )}
+                                    {Array.isArray(q.deductions) && q.deductions.length > 0 && (
+                                      <div style={{ marginBottom: 6, background: "rgba(255, 255, 255, 0.02)", padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(255, 90, 90, 0.15)" }}>
+                                        <div style={{ fontSize: 11, fontWeight: 700, color: "#ff7070", marginBottom: 3 }}>Itemized Deductions:</div>
+                                        <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11.5, color: "#fca5a5", lineHeight: 1.5 }}>
+                                          {q.deductions.map((d: any, dIdx: number) => (
+                                            <li key={dIdx}>
+                                              {typeof d === "string" ? d : `${d.reason || d.mistake || d.description || JSON.stringify(d)} ${d.marks_deducted ? `(-${d.marks_deducted})` : ""}`}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {q.whatWasCorrect && (
+                                      <div style={{ fontSize: 11.5, color: "#86efac", marginBottom: 4, lineHeight: 1.5 }}>
+                                        <strong style={{ color: "#22c55e" }}>✅ Correct Elements: </strong>{q.whatWasCorrect}
+                                      </div>
+                                    )}
+                                    {q.reasoning && (
+                                      <div style={{ color: "var(--text2)", marginBottom: 4 }}>
+                                        {q.reasoning}
+                                      </div>
+                                    )}
+                                    {q.improvement && (
+                                      <div style={{ fontSize: 11, color: "#818cf8", marginTop: 4, background: "rgba(129, 140, 248, 0.08)", padding: "4px 8px", borderRadius: 4 }}>
+                                        💡 <strong>Guidance: </strong>{q.improvement}
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               </React.Fragment>
@@ -3628,6 +4088,11 @@ Make sure options are complete sentences or phrases, not just letters. Mix diffi
           {/* ═══ SMART GLOSSARY CREATOR ═══ */}
           {page === "glossary" && (
             <GlossaryPage />
+          )}
+
+          {/* ═══ BLOOM'S TAXONOMY ALIGNMENT ENGINE ═══ */}
+          {page === "blooms" && (
+            <BloomsView />
           )}
 
 

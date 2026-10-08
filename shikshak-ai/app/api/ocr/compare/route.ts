@@ -71,14 +71,14 @@ export async function POST(req: NextRequest) {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
         body: JSON.stringify({
-          model: "meta-llama/llama-4-scout-17b-16e-instruct",
+          model: "qwen/qwen3.8-27b",
           max_tokens: 2000,
           response_format: { type: "json_object" },
           messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }, { type: "text", text: ocrPrompt }] }],
           temperature: 0,
         }),
       })),
-      "gemini-1.5-pro": () => fetchSafe("gemini-1.5-pro", () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${geminiKey}`, {
+      "gemini-2.0-flash": () => fetchSafe("gemini-2.0-flash", () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
 
     let results: any = {};
     
-    const pythonBackend = "http://127.0.0.1:8080";
+    const pythonBackend = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8080";
 
     // 1. Process Python Local Engines (Can stay parallel as they don't hit Groq rate limits)
     if (selectedModels.some((m:string) => ["paddleocr", "tesseract"].includes(m))) {
@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Process AI Cloud Engines SEQUENTIALLY to avoid Rate Limits
-    const aiToRun = ["groq", "gemini-1.5-pro"].filter(m => selectedModels.includes(m));
+    const aiToRun = ["groq", "gemini-2.0-flash"].filter(m => selectedModels.includes(m));
     
     for (const modelId of aiToRun) {
       const start = Date.now();
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
         const g = await outcome.res!.json();
         try { 
           // Gemini parsing vs OpenAI parsing
-          const msgContent = modelId === "gemini-1.5-pro" ? g.candidates?.[0]?.content?.parts?.[0]?.text : g.choices[0].message.content;
+          const msgContent = modelId === "gemini-2.0-flash" ? g.candidates?.[0]?.content?.parts?.[0]?.text : g.choices[0].message.content;
           const content = extractJson(msgContent || "{}");
           results[modelId] = { ...content, time: elapsed }; 
         } catch (e) {

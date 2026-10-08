@@ -155,113 +155,285 @@ class ProEvaluator:
 
     def generate_professional_report(self, annotated_images: List[Image.Image], evaluation_data: Dict) -> str:
         """
-        Generates a PDF containing annotated images and a professional report card.
+        Generates a PDF containing a professional school-style report card and annotated answer sheets.
         Returns the path to the PDF.
         """
+        from datetime import datetime
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
-        
-        # =========================================================
-        # PAGE 1: REPORT CARD
-        # =========================================================
-        pdf.add_page()
-        pdf.set_font("Arial", "B", 20)
-        pdf.set_text_color(30, 30, 80)
-        pdf.cell(0, 15, _s("ShikshakAI - Professional Evaluation Report"), ln=True, align="C")
-        pdf.ln(10)
-        
-        # Summary Box
-        pdf.set_font("Arial", "B", 14)
-        pdf.set_fill_color(240, 240, 245)
-        pdf.set_text_color(0, 0, 0)
         
         total_awarded = evaluation_data.get("total_awarded", 0)
         total_possible = evaluation_data.get("total_possible", 0)
         percentage = evaluation_data.get("percentage", 0)
         grade = evaluation_data.get("grade", "N/A")
+        overall_feedback = evaluation_data.get("overall_feedback", "")
+        questions = evaluation_data.get("questions", [])
+        now_str = datetime.now().strftime("%d %B %Y")
         
-        pdf.cell(0, 10, _s(f"Final Score: {total_awarded} / {total_possible}  ({percentage}%)  -  Grade: {grade}"), border=1, ln=True, fill=True, align="C")
-        pdf.ln(10)
+        # ─────────────────────────────────────────
+        # PAGE 1: OFFICIAL REPORT CARD
+        # ─────────────────────────────────────────
+        pdf.add_page()
         
-        # Detailed Question Table
+        # ── TOP HEADER BAR ──
+        pdf.set_fill_color(25, 40, 90)   # Dark navy
+        pdf.rect(0, 0, 210, 38, 'F')
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 18)
+        pdf.set_xy(15, 7)
+        pdf.cell(0, 10, _s("EXAMINATION RESULT SHEET"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_xy(15, 20)
+        pdf.cell(0, 7, _s("ShikshakAI Evaluation System  ·  Official Academic Record"), ln=True)
+        
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_xy(15, 45)
+        
+        # ── STUDENT / EXAM INFO BOX ──
+        pdf.set_fill_color(245, 246, 250)
+        pdf.set_draw_color(200, 205, 220)
+        pdf.rect(15, 42, 180, 32, 'FD')
+        
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_xy(20, 46)
+        pdf.cell(55, 6, _s("Date of Evaluation:"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(65, 6, _s(now_str), ln=False)
+        
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_text_color(80, 80, 120)
+        pdf.cell(35, 6, _s("Total Pages:"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(0, 6, _s(str(len(annotated_images))), ln=True)
+        
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_x(20)
+        pdf.cell(55, 6, _s("Questions Evaluated:"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(30, 30, 30)
+        counted = [q for q in questions if q.get("is_counted", True)]
+        pdf.cell(65, 6, _s(str(len(counted))), ln=False)
+        
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_text_color(80, 80, 120)
+        pdf.cell(35, 6, _s("Evaluation Mode:"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(0, 6, _s("AI-Assisted Academic Grading"), ln=True)
+        
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_x(20)
+        pdf.cell(55, 6, _s("Examiner:"), ln=False)
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(0, 6, _s("ShikshakAI Autonomous Evaluator"), ln=True)
+        
+        pdf.set_xy(15, 80)
+        
+        # ── SCORE SUMMARY BOX ──
+        # Determine color based on grade
+        if percentage >= 75:
+            box_r, box_g, box_b = 0, 150, 100   # Green
+        elif percentage >= 50:
+            box_r, box_g, box_b = 200, 140, 0   # Amber
+        else:
+            box_r, box_g, box_b = 190, 30, 60   # Red
+        
+        pdf.set_fill_color(box_r, box_g, box_b)
+        pdf.rect(15, 80, 180, 30, 'F')
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 22)
+        pdf.set_xy(20, 84)
+        pdf.cell(80, 14, _s(f"{total_awarded} / {total_possible}"), ln=False)
+        
+        pdf.set_font("Arial", "B", 14)
+        pdf.set_xy(100, 84)
+        pdf.cell(40, 14, _s(f"{percentage}%"), ln=False)
+        
+        pdf.set_font("Arial", "B", 18)
+        pdf.set_xy(145, 82)
+        pdf.cell(30, 18, _s(f"Grade: {grade}"), ln=False)
+        
+        pdf.set_font("Arial", "", 9)
+        pdf.set_xy(20, 98)
+        # Performance band
+        band = "Distinction" if percentage >= 75 else "First Class" if percentage >= 60 else "Second Class" if percentage >= 50 else "Fail"
+        pdf.cell(0, 6, _s(f"Performance Band: {band}"), ln=True)
+        
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_xy(15, 118)
+        
+        # ── QUESTION-WISE MARKS TABLE ──
         pdf.set_font("Arial", "B", 11)
-        pdf.set_fill_color(200, 200, 220)
-        col_widths = [20, 25, 30, 115]
-        headers = ["Q.No", "Marks", "Status", "Feedback"]
-        for i, h in enumerate(headers):
-            pdf.cell(col_widths[i], 10, _s(h), border=1, fill=True, align="C")
+        pdf.set_text_color(25, 40, 90)
+        pdf.cell(0, 8, _s("Question-wise Marks Breakdown"), ln=True)
+        pdf.ln(2)
+        
+        # Table header
+        pdf.set_fill_color(25, 40, 90)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 9)
+        col_w = [16, 30, 22, 25, 22, 75]
+        hdrs = ["Q.No", "Section", "Marks", "Max", "Status", "Examiner Remarks"]
+        for i, h in enumerate(hdrs):
+            pdf.cell(col_w[i], 8, _s(h), border=1, align="C", fill=True)
         pdf.ln()
         
-        pdf.set_font("Arial", "", 10)
-        for q in evaluation_data.get("questions", []):
-            marks_str = f"{q.get('marks_awarded', 0)}/{q.get('marks_total', 0)}"
-            status = str(q.get("status", "evaluated")).capitalize()
-            feedback = str(q.get("red_pen_comment", ""))[:80]
+        pdf.set_font("Arial", "", 8)
+        for q in questions:
+            awarded_q = float(q.get("marks_awarded", 0))
+            total_q = float(q.get("marks_total", 0))
+            is_counted = q.get("is_counted", True)
+            status = str(q.get("status", "")).lower()
             
-            # Row — all values sanitised through _s()
-            pdf.cell(col_widths[0], 8, _s(q.get("question_no", "")), border=1, align="C")
-            pdf.cell(col_widths[1], 8, _s(marks_str), border=1, align="C")
-            pdf.cell(col_widths[2], 8, _s(status), border=1, align="C")
-            pdf.cell(col_widths[3], 8, _s(feedback), border=1)
+            if not is_counted or status == "optional_skipped":
+                pdf.set_fill_color(235, 235, 245)
+                pdf.set_text_color(140, 140, 160)
+            elif awarded_q >= total_q:
+                pdf.set_fill_color(220, 245, 230)  # Light green
+                pdf.set_text_color(0, 100, 50)
+            elif awarded_q == 0 or status in ("zero", "not_attempted"):
+                pdf.set_fill_color(250, 220, 225)  # Light red
+                pdf.set_text_color(160, 30, 50)
+            else:
+                pdf.set_fill_color(255, 248, 215)  # Light amber
+                pdf.set_text_color(120, 80, 0)
+            
+            status_label = "Full" if awarded_q >= total_q else ("Not Attempted" if status == "not_attempted" else ("Skipped" if not is_counted else "Partial"))
+            feedback_short = str(q.get("feedback", q.get("red_pen_comment", "") or ""))[:90]
+            
+            row_data = [
+                str(q.get("question_no", "")),
+                str(q.get("section", "—"))[:18],
+                str(awarded_q),
+                str(total_q),
+                status_label,
+                feedback_short
+            ]
+            for i, cell_val in enumerate(row_data):
+                pdf.cell(col_w[i], 7, _s(cell_val), border=1, align="C" if i < 5 else "L", fill=True)
             pdf.ln()
-            
-        pdf.ln(10)
         
-        # Mark Loss Analysis
-        pdf.set_font("Arial", "B", 12)
-        pdf.set_text_color(180, 0, 0)
-        pdf.cell(0, 10, _s("Mark Loss Analysis (Where did the student lose marks?)"), ln=True)
-        pdf.set_font("Arial", "", 11)
         pdf.set_text_color(0, 0, 0)
+        pdf.set_fill_color(255, 255, 255)
+        pdf.ln(6)
         
+        # ── MARK LOSS ANALYSIS ──
         losses = evaluation_data.get("mark_loss_analysis", [])
-        if not losses:
-            pdf.cell(0, 8, _s("No significant marks lost."), ln=True)
-        else:
-            for loss in losses:
-                pdf.cell(0, 8, _s(f"  - {loss}"), ln=True)
-                
-        pdf.ln(10)
+        if losses:
+            pdf.set_font("Arial", "B", 10)
+            pdf.set_text_color(160, 30, 50)
+            pdf.cell(0, 8, _s("Areas Where Marks Were Lost:"), ln=True)
+            pdf.set_font("Arial", "", 9)
+            pdf.set_text_color(60, 60, 60)
+            for loss in losses[:8]:  # Cap at 8 items
+                pdf.cell(5, 6, _s(""), ln=False)  # indent
+                pdf.cell(0, 6, _s(f"• {loss}"), ln=True)
+            pdf.ln(4)
         
-        # General Feedback
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 10, _s("Overall Assessor Feedback:"), ln=True)
-        pdf.set_font("Arial", "", 11)
-        pdf.multi_cell(0, 8, _s(evaluation_data.get("overall_feedback", "")))
+        # ── EXAMINER'S OVERALL REMARKS ──
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_text_color(25, 40, 90)
+        pdf.cell(0, 8, _s("Examiner's Overall Assessment:"), ln=True)
         
-        # =========================================================
-        # SUBSEQUENT PAGES: ANNOTATED IMAGES
-        # =========================================================
-        # Save temp images
+        pdf.set_fill_color(248, 249, 255)
+        pdf.set_draw_color(180, 190, 220)
+        x_before = pdf.get_x()
+        y_before = pdf.get_y()
+        pdf.set_font("Arial", "", 9)
+        pdf.set_text_color(40, 40, 60)
+        pdf.multi_cell(180, 6, _s(overall_feedback or "Student's paper has been evaluated thoroughly."), border=1, fill=True)
+        pdf.ln(6)
+        
+        # ── SIGNATURE / ATTESTATION BLOCK ──
+        y_sig = pdf.get_y()
+        if y_sig > 250:  # Not enough room — add page
+            pdf.add_page()
+            y_sig = 20
+        
+        pdf.set_draw_color(180, 190, 220)
+        pdf.set_fill_color(248, 249, 255)
+        pdf.rect(15, y_sig, 180, 30, 'FD')
+        
+        pdf.set_font("Arial", "B", 8)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_xy(20, y_sig + 4)
+        pdf.cell(80, 5, _s("Evaluated on:"), ln=False)
+        pdf.set_font("Arial", "", 8)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(0, 5, _s(now_str), ln=True)
+        
+        pdf.set_font("Arial", "B", 8)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_xy(20, y_sig + 12)
+        pdf.cell(80, 5, _s("Evaluator:"), ln=False)
+        pdf.set_font("Arial", "", 8)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(0, 5, _s("ShikshakAI Evaluation System"), ln=True)
+        
+        pdf.set_font("Arial", "B", 8)
+        pdf.set_text_color(80, 80, 120)
+        pdf.set_xy(20, y_sig + 20)
+        pdf.cell(80, 5, _s("Teacher Signature / Stamp:"), ln=False)
+        pdf.set_font("Arial", "", 8)
+        pdf.set_text_color(170, 170, 190)
+        pdf.cell(0, 5, _s("_________________________"), ln=True)
+        
+        # ── FOOTER ──
+        pdf.set_y(-15)
+        pdf.set_font("Arial", "I", 7)
+        pdf.set_text_color(160, 160, 180)
+        pdf.cell(0, 5, _s(f"ShikshakAI · Evaluation Report · {now_str} · This is an official evaluation record."), align="C")
+        
+        # ─────────────────────────────────────────
+        # SUBSEQUENT PAGES: ANNOTATED ANSWER SHEETS
+        # ─────────────────────────────────────────
         temp_files = []
         for i, img in enumerate(annotated_images):
             pdf.add_page()
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, _s(f"Annotated Answer Sheet - Page {i+1}"), ln=True, align="C")
+            
+            # Mini header on each page
+            pdf.set_fill_color(25, 40, 90)
+            pdf.rect(0, 0, 210, 14, 'F')
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", "B", 9)
+            pdf.set_xy(15, 4)
+            pdf.cell(100, 6, _s(f"Answer Sheet — Page {i+1} of {len(annotated_images)}"), ln=False)
+            pdf.set_font("Arial", "", 8)
+            pdf.set_xy(140, 4)
+            pdf.cell(0, 6, _s(f"Score: {total_awarded}/{total_possible}  Grade: {grade}"), ln=True)
+            
+            pdf.set_text_color(0, 0, 0)
             
             tmp_path = f"temp_annotated_{i}.jpg"
-            # Ensure the image is in RGB mode and not too large for PDF embedding
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            # Downscale for PDF if needed (A4 at 150 DPI = 1240x1754 px, plenty for print)
-            MAX_PDF_PIXELS = 8_000_000  # 8MP is plenty for a PDF page
+            MAX_PDF_PIXELS = 8_000_000
             if img.width * img.height > MAX_PDF_PIXELS:
                 scale = (MAX_PDF_PIXELS / (img.width * img.height)) ** 0.5
                 img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
             img.save(tmp_path, "JPEG", quality=80)
             temp_files.append(tmp_path)
             
-            # Fit image to page width
-            # A4 width is 210mm. Margins are 15mm each side. Usable width = 180mm
-            pdf.image(tmp_path, x=15, w=180)
+            # Image starts below header
+            pdf.image(tmp_path, x=15, y=18, w=180)
             
-        # Save PDF
+            # Page footer
+            pdf.set_y(-12)
+            pdf.set_font("Arial", "I", 7)
+            pdf.set_text_color(160, 160, 180)
+            pdf.cell(0, 5, _s(f"ShikshakAI · Answer Sheet Page {i+1}"), align="C")
+        
         output_path = "professional_evaluation_report.pdf"
         pdf.output(output_path)
         
-        # Cleanup temp files
         for f in temp_files:
             if os.path.exists(f):
                 os.remove(f)
-                
+        
         return output_path

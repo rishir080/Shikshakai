@@ -35,15 +35,8 @@ venv\Scripts\python.exe -u main.py
 
 set EXIT_CODE=%errorlevel%
 echo.
-echo [%TIME%] Server exited with code %EXIT_CODE%.
-
-if %EXIT_CODE% == 0 (
-    echo Server stopped cleanly. Press any key to restart, or Ctrl+C to quit.
-    pause
-) else (
-    echo [!] Server crashed or was killed. Auto-restarting in 5 seconds...
-    echo     Press Ctrl+C NOW to abort restart.
-    timeout /t 5 /nobreak >nul
-)
+echo [%TIME%] Server process exited with code %EXIT_CODE%.
+echo Auto-restarting server in 3 seconds... (Press Ctrl+C to abort)
+timeout /t 3 /nobreak >nul
 
 goto RESTART_LOOP

@@ -2,7 +2,7 @@
 // Proxy to Python backend /api/glossary
 import { NextRequest, NextResponse } from "next/server";
 
-const PYTHON_BACKEND = "http://127.0.0.1:8080";
+const PYTHON_BACKEND = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8080";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {

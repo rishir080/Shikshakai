@@ -13,6 +13,7 @@ export const NAV_MAIN = [
 
 export const NAV_TOOLS = [
   { id: "quiz", icon: "🎯", label: "Quiz Builder", badge: "PRO" },
+  { id: "blooms", icon: "🧠", label: "Bloom's Taxonomy", badge: "AI" },
   { id: "lesson", icon: "✧", label: "Lesson Planner", badge: "NEW" },
   { id: "study", icon: "◆", label: "Study Tool", badge: "NEW" },
   { id: "paper", icon: "✍️", label: "Paper Evaluation" },

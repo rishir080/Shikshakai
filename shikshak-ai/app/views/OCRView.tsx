@@ -44,7 +44,7 @@ export const OCRView = React.memo(({
         </div>
         
         <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 8 }}>
-           {['groq', 'gemini-1.5-pro', 'tesseract', 'paddleocr'].map(m => (
+           {['groq', 'gemini-2.0-flash', 'tesseract', 'paddleocr'].map(m => (
               <label key={m} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", background: "rgba(255,255,255,0.03)", padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)" }}>
                  <input type="checkbox" checked={activeComparisonModels.includes(m)} onChange={e => {
                     if(e.target.checked) setActiveComparisonModels([...activeComparisonModels, m]);

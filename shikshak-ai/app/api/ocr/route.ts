@@ -1,56 +1,149 @@
 // app/api/ocr/route.ts
 // ─────────────────────────────────────────────────────────────────
-// ARCHITECTURE:
-//   groq-vision (PDF)  → Converts PDF pages to images, calls Groq API directly
-//   groq / llama (IMG) → Calls Groq API directly
-//   trocr / tesseract  → Forwards to Python backend (optional, local)
+// Handles single image OCR via vision APIs.
+// Fallback chain: Groq qwen3.8 → Groq qwen3.6 → Claude (Anthropic) → Gemini
+// PDF pages are rendered client-side (browser canvas) before being sent here.
 // ─────────────────────────────────────────────────────────────────
 import { NextRequest, NextResponse } from "next/server";
 
-const PYTHON_BACKEND = "http://127.0.0.1:8080";
-const GROQ_API_KEY   = process.env.GROQ_API_KEY || "";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const GROQ_API_KEY      = process.env.GROQ_API_KEY      || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const GEMINI_API_KEY    = process.env.GEMINI_API_KEY    || "";
 
-const OCR_PROMPT = `You are an expert OCR system specialized in reading handwritten answer sheets and printed documents.
+// Two separate Groq vision models — each has its own TPM/RPM bucket
+// qwen3.8-27b is fast and does not waste tokens on thinking blocks (~700ms per page)
+// qwen3.6-27b is the backup
+const GROQ_MODEL_A = "qwen/qwen3.8-27b";   // primary (fast, direct, high throughput)
+const GROQ_MODEL_B = "qwen/qwen3.6-27b";   // backup
 
-Your task: Transcribe EVERY word, number, symbol, and mark exactly as it appears on this page.
+// 3rd: Claude Haiku — excellent vision, reliable API access
+const CLAUDE_MODEL = "claude-3-haiku-20240307";
+// 4th: Gemini Vision — fallback models
+const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"];
+
+const OCR_PROMPT = `You are an expert OCR transcription system specialized in reading handwritten exam answer sheets.
+
+Your task: Transcribe EVERY word, question header, number, mathematical formula, diagram label, and symbol accurately as written.
 
 Rules:
-- Copy text EXACTLY as written — same spelling, same punctuation, same line breaks
-- Preserve the structure: if answers are numbered (1, 2, 3...), keep that numbering
-- Do NOT correct grammar or spelling — transcribe what is actually written
-- Do NOT summarize or paraphrase
-- Mark truly unreadable words as [illegible]
-- If the page is blank, write: [blank page]
+1. QUESTION NUMBERS & HEADERS: Pay extreme attention to question identifiers (e.g., Q1, Ans 1, 1(a), Q.2b, Part B, Section A). Always transcribe them clearly on their own line.
+2. MATHEMATICAL & SCIENTIFIC FORMULAS: Transcribe equations, fractions, square roots, integrals, matrices, chemical formulas, and units (m/s^2, kg, Ohm) precisely.
+3. PRESERVE STRUCTURE: Keep original line breaks, bullet points, and step-by-step layout.
+4. FAITHFULNESS: Do NOT summarize, skip, or rephrase anything. Mark completely illegible words as [illegible].
+5. BLANK PAGES: If page has no writing, return: [blank page]
 
-Return ONLY the transcribed text. No explanations, no JSON, no comments.`;
+Return ONLY the transcribed text. No intro, no conversational remarks.`;
 
 
-// ─── Helper: call Groq Vision for one base64 image ───────────────
-async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<string> {
-  const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
-  console.log(`[OCR] Sending image to Groq: ${sizeKB} KB`);
-  if (sizeKB > 4000) {
-    throw new Error(`[SIZE_LIMIT_EXCEEDED] Image size ${sizeKB} KB exceeds Groq limit of 4000 KB.`);
+// ─── Strip <think> reasoning tags (including unclosed ones) ────────
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "").trim();
+}
+
+// ─── Parse Retry-After header (seconds or HTTP date) ─────────────
+function parseRetryAfter(header: string | null): number {
+  if (!header) return 15; // default 15s if no header
+  const seconds = parseInt(header, 10);
+  if (!isNaN(seconds)) return Math.min(seconds + 2, 60); // cap at 60s
+  const date = new Date(header);
+  if (!isNaN(date.getTime())) {
+    return Math.min(Math.ceil((date.getTime() - Date.now()) / 1000) + 2, 60);
   }
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  return 15;
+}
+
+// ─── Sleep helper ─────────────────────────────────────────────────
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// ─── 1. Groq Vision — with server-side retry on 429 ──────────────
+// Tries both model A and model B before giving up on Groq.
+async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<string> {
+  if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
+  const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
+  if (sizeKB > 4000) throw new Error(`Image too large for Groq: ${sizeKB} KB`);
+
+  // Try each model up to 3 attempts with backoff on 429
+  const models = [GROQ_MODEL_A, GROQ_MODEL_B];
+
+  for (const model of models) {
+    console.log(`[OCR/Groq] ${sizeKB} KB → ${model}`);
+    let lastError = "";
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+        body: JSON.stringify({
+          model,
+          max_tokens: 2048,
+          temperature: 0,
+          messages: [{ role: "user", content: [
+            { type: "text", text: OCR_PROMPT },
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${imgBase64}` } },
+          ]}],
+        }),
+        signal: AbortSignal.timeout(90_000),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = stripThinkTags(data.choices?.[0]?.message?.content?.trim() || "");
+        console.log(`[OCR/Groq] ✓ ${model} succeeded (attempt ${attempt})`);
+        return text;
+      }
+
+      if (res.status === 429) {
+        // Rate limited — read exact wait time from header
+        const retryAfter = parseRetryAfter(res.headers.get("retry-after") || res.headers.get("x-ratelimit-reset-requests"));
+        console.warn(`[OCR/Groq] ${model} rate limited (attempt ${attempt}/${3}). Waiting ${retryAfter}s…`);
+
+        if (attempt < 3) {
+          await sleep(retryAfter * 1000);
+          continue; // retry same model
+        }
+        // Exhausted retries for this model → try next model
+        lastError = `429 rate limited after 3 attempts`;
+        break;
+      }
+
+      // Non-rate-limit error (400, 404, 500, etc.) → don't retry this model
+      const errText = await res.text();
+      let parsed: any = {};
+      try { parsed = JSON.parse(errText); } catch {}
+      lastError = `Groq ${res.status}: ${parsed?.error?.message || errText.slice(0, 200)}`;
+      console.warn(`[OCR/Groq] ${model} failed → ${lastError}`);
+      break; // try next model
+    }
+  }
+
+  throw new Error(`All Groq models exhausted. Last error: rate limited or unavailable`);
+}
+
+
+// ─── 2. Claude (Anthropic) Vision ────────────────────────────────
+async function claudeOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<string> {
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not configured");
+  const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
+  console.log(`[OCR/Claude] ${sizeKB} KB → ${CLAUDE_MODEL}`);
+
+  // Claude accepts image/jpeg, image/png, image/gif, image/webp
+  const supportedMime = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+  const safeMime = supportedMime.includes(mimeType) ? mimeType : "image/jpeg";
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${GROQ_API_KEY}`,
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: CLAUDE_MODEL,
       max_tokens: 8192,
-      temperature: 0,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "text", text: OCR_PROMPT },
-          { type: "image_url", image_url: { url: `data:${mimeType};base64,${imgBase64}` } },
-        ],
-      }],
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: safeMime, data: imgBase64 } },
+        { type: "text", text: OCR_PROMPT },
+      ]}],
     }),
     signal: AbortSignal.timeout(90_000),
   });
@@ -59,285 +152,116 @@ async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<
     const errText = await res.text();
     let parsed: any = {};
     try { parsed = JSON.parse(errText); } catch {}
-    const msg = parsed?.error?.message || errText.slice(0, 300);
-    console.error(`[Groq API Error ${res.status}]`, msg);
-    throw new Error(`Groq ${res.status}: ${msg}`);
+    throw new Error(`Claude ${res.status}: ${parsed?.error?.message || errText.slice(0, 200)}`);
   }
-
   const data = await res.json();
-  const text = data.choices?.[0]?.message?.content?.trim() || "";
-  return text;
+  return data.content?.[0]?.text?.trim() || "";
 }
 
-// ─── Helper: call Gemini Vision REST API for one base64 image (with retry) ────
-async function geminiOcrPage(imgBase64: string, maxRetries = 3): Promise<string> {
-  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set in .env.local");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-  const payload = {
-    contents: [{ parts: [
-      { text: "Transcribe the handwriting on this page exactly as it appears. Preserve line breaks and numbering. Return only the transcribed text." },
-      { inline_data: { mime_type: "image/jpeg", data: imgBase64 } }
-    ]}]
-  };
 
-  let lastErr: Error = new Error("Gemini OCR failed");
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+// ─── 3. Gemini Vision ────────────────────────────────────────────
+async function geminiOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<string> {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
+  const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
+
+  let lastError = "";
+  for (const model of GEMINI_MODELS) {
     try {
+      console.log(`[OCR/Gemini] ${sizeKB} KB → ${model}`);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: OCR_PROMPT },
+            { inline_data: { mime_type: mimeType, data: imgBase64 } },
+          ]}],
+          generationConfig: { temperature: 0, maxOutputTokens: 8192 },
+        }),
         signal: AbortSignal.timeout(90_000),
       });
-      if (!res.ok) {
-        const errText = await res.text();
-        const isRateLimit = res.status === 429 || res.status === 503;
-        lastErr = new Error(`Gemini ${res.status}: ${errText.slice(0, 300)}`);
-        if (isRateLimit && attempt < maxRetries - 1) {
-          const waitMs = (2 ** attempt) * 5000; // 5s, 10s, 20s
-          console.warn(`[OCR] Gemini rate-limited (attempt ${attempt + 1}). Retrying in ${waitMs / 1000}s...`);
-          await new Promise(r => setTimeout(r, waitMs));
-          continue;
-        }
-        throw lastErr;
+
+      if (res.ok) {
+        const data = await res.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
       }
-      const data = await res.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+      const errText = await res.text();
+      let parsed: any = {};
+      try { parsed = JSON.parse(errText); } catch {}
+      lastError = `Gemini ${res.status} [${model}]: ${parsed?.error?.message || errText.slice(0, 200)}`;
     } catch (e: any) {
-      lastErr = e;
-      const isTransient = /429|503|UNAVAILABLE/i.test(e.message || "");
-      if (isTransient && attempt < maxRetries - 1) {
-        const waitMs = (2 ** attempt) * 5000;
-        console.warn(`[OCR] Gemini transient error (attempt ${attempt + 1}): ${e.message}. Retrying in ${waitMs / 1000}s...`);
-        await new Promise(r => setTimeout(r, waitMs));
-        continue;
-      }
-      if (attempt === maxRetries - 1) throw e;
+      lastError = e.message;
     }
   }
-  throw lastErr;
+  throw new Error(lastError || "All Gemini models failed");
 }
 
 
-// ─── Helper: decode PDF pages to JPEG base64 via pdfjs (server-side) ────
-async function pdfToPageImages(pdfBase64: string): Promise<string[]> {
-  // We use the Python backend's PDF-to-image conversion endpoint
-  // which uses poppler (much faster and more reliable than pdfjs server-side)
-  const res = await fetch(`${PYTHON_BACKEND}/api/pdf-to-images`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pdfBase64 }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw new Error(`PDF conversion failed: ${res.status}`);
-  const data = await res.json();
-  return data.images as string[]; // array of base64 JPEG strings
-}
-
-// ─── Main handler ────────────────────────────────────────────────
+// ─── Main handler ─────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { imageBase64, pdfBase64, mimeType, model = "groq-vision" } = body;
+    const { imageBase64, mimeType } = body;
 
-    // ══════════════════════════════════════════════
-    // ROUTE 1: PDF + groq-vision / gemini-vision → Page-by-page cloud OCR
-    // ══════════════════════════════════════════════
-    if ((pdfBase64 || mimeType === "application/pdf") && (model === "groq-vision" || model === "gemini-vision")) {
-      const isGemini = model === "gemini-vision";
-      if (!isGemini && !GROQ_API_KEY) {
-        return NextResponse.json({ error: "GROQ_API_KEY not set in .env.local" }, { status: 500 });
-      }
-      if (isGemini && !GEMINI_API_KEY) {
-        return NextResponse.json({ error: "GEMINI_API_KEY not set in .env.local" }, { status: 500 });
-      }
+    if (!GROQ_API_KEY && !ANTHROPIC_API_KEY && !GEMINI_API_KEY) {
+      return NextResponse.json(
+        { error: "No API keys configured. Set GROQ_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in .env.local" },
+        { status: 500 }
+      );
+    }
 
-      // Step 1: Convert PDF to page images via Python backend
-      let pageImages: string[] = [];
+    if (!imageBase64) {
+      return NextResponse.json({ error: "No image data provided" }, { status: 400 });
+    }
+
+    const imgMime = mimeType || "image/jpeg";
+    const errors: string[] = [];
+
+    // ── 1. Try Groq (qwen3.6 → qwen3.8, server-side retry on 429) ──
+    if (GROQ_API_KEY) {
       try {
-        pageImages = await pdfToPageImages(pdfBase64 || imageBase64);
+        const text = await groqOcrPage(imageBase64, imgMime);
+        console.log("[OCR] ✓ Groq succeeded");
+        return NextResponse.json({ status: "success", text, confidence: 92, detections: [], engine: "groq" });
       } catch (e: any) {
-        return NextResponse.json({
-          error: "PDF Conversion Failed",
-          detail: `Could not convert PDF to images. Make sure the Python backend is running.\nError: ${e.message}`,
-        }, { status: 503 });
+        errors.push(`Groq: ${e.message}`);
+        console.warn("[OCR] Groq failed →", e.message);
       }
-
-      if (!pageImages || pageImages.length === 0) {
-        return NextResponse.json({ error: "No pages extracted from PDF" }, { status: 400 });
-      }
-
-      const totalPages = pageImages.length;
-      console.log(`[OCR] Processing ${totalPages} pages with ${model}...`);
-
-      // Step 2: Process pages — Gemini parallel (10 at once), Groq batches of 5
-      const BATCH_SIZE = isGemini ? 10 : 5;
-      const pages: any[] = [];
-
-      for (let batchStart = 0; batchStart < totalPages; batchStart += BATCH_SIZE) {
-        const batch = pageImages.slice(batchStart, batchStart + BATCH_SIZE);
-        const batchResults = await Promise.allSettled(
-          batch.map(async (img, idx) => {
-            const pageNum = batchStart + idx + 1;
-            try {
-              let text = "";
-              let confidence = 92;
-              if (isGemini) {
-                text = await geminiOcrPage(img);
-                confidence = 98;
-              } else {
-                try {
-                  text = await groqOcrPage(img, "image/jpeg");
-                  confidence = 92;
-                } catch (groqErr: any) {
-                  console.warn(`[OCR] Groq failed on page ${pageNum}: ${groqErr.message}. Trying Gemini fallback...`);
-                  if (GEMINI_API_KEY) {
-                    text = await geminiOcrPage(img);
-                    confidence = 98;
-                  } else {
-                    throw groqErr;
-                  }
-                }
-              }
-              console.log(`[OCR] ✅ Page ${pageNum}/${totalPages} done (${model})`);
-              return { page: pageNum, text, confidence, error: false };
-            } catch (e: any) {
-              console.error(`[OCR] ❌ Page ${pageNum} failed completely: ${e.message}`);
-              return { page: pageNum, text: `[Error on page ${pageNum}: ${e.message}]`, confidence: 0, error: true };
-            }
-          })
-        );
-
-        for (const result of batchResults) {
-          if (result.status === "fulfilled") pages.push(result.value);
-        }
-
-        // Groq: delay between batches; Gemini has higher limits so no delay needed
-        if (!isGemini && batchStart + BATCH_SIZE < totalPages) {
-          await new Promise(r => setTimeout(r, 1000));
-        }
-      }
-
-      pages.sort((a, b) => a.page - b.page);
-
-      const merged_text = pages
-        .map(p => `── Page ${p.page} of ${totalPages} ──\n${p.text}`)
-        .join("\n\n");
-
-      return NextResponse.json({
-        status: "success",
-        total_pages: totalPages,
-        engine: model,
-        pages: pages.map(p => ({
-          page: p.page,
-          text: p.text,
-          confidence: p.confidence,
-          lines: p.text.split("\n").filter(Boolean).map((t: string, i: number) => ({ line: i + 1, text: t })),
-          error: p.error,
-        })),
-        merged_text,
-      });
     }
 
-    // ══════════════════════════════════════════════
-    // ROUTE 2: PDF + local engine → Python backend
-    // ══════════════════════════════════════════════
-    if (pdfBase64 || mimeType === "application/pdf") {
+    // ── 2. Try Claude ──
+    if (ANTHROPIC_API_KEY) {
       try {
-        const response = await fetch(`${PYTHON_BACKEND}/api/ocr-pdf`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pdfBase64: pdfBase64 || imageBase64,
-            target_model: model,
-          }),
-          signal: AbortSignal.timeout(600_000),
-        });
-        if (!response.ok) {
-          return NextResponse.json({ error: "PDF OCR Failed", detail: await response.text() }, { status: 500 });
-        }
-        return NextResponse.json(await response.json());
+        const text = await claudeOcrPage(imageBase64, imgMime);
+        console.log("[OCR] ✓ Claude succeeded");
+        return NextResponse.json({ status: "success", text, confidence: 93, detections: [], engine: "claude" });
       } catch (e: any) {
-        console.error("── [API/OCR] ROUTE 2 FETCH ERROR ──", e);
-        require('fs').appendFileSync('ocr_debug.log', new Date().toISOString() + ' ROUTE 2 ERROR: ' + e.message + '\\n');
-        return NextResponse.json({
-          error: "Python OCR Backend Unreachable",
-          detail: `Local OCR requires the Python backend to be running.\nStart it with: .\\venv\\Scripts\\python.exe main.py\nError: ${e.message}`,
-        }, { status: 503 });
+        errors.push(`Claude: ${e.message}`);
+        console.warn("[OCR] Claude failed →", e.message);
       }
     }
 
-    // ══════════════════════════════════════════════
-    // ROUTE 3: Single image + Groq Vision
-    // ══════════════════════════════════════════════
-    if ((model === "groq-vision" || model === "groq" || model.startsWith("llama")) && model !== "gemini-vision") {
+    // ── 3. Try Gemini ──
+    if (GEMINI_API_KEY) {
       try {
-        if (!imageBase64) return NextResponse.json({ error: "No image data provided" }, { status: 400 });
-        // Check base64 size — Groq limit is ~4MB per image
-        const sizeKB = Math.round(imageBase64.length * 0.75 / 1024);
-        console.log(`[OCR] Image size: ${sizeKB} KB`);
-        if (sizeKB > 4000) {
-          if (GEMINI_API_KEY) {
-            console.log("[OCR] Image too large for Groq, falling back to Gemini...");
-            const text = await geminiOcrPage(imageBase64);
-            return NextResponse.json({ status: "success", text, confidence: 98, detections: [] });
-          }
-          return NextResponse.json({ error: "Groq OCR Failed", detail: `Image too large (${sizeKB} KB). Max is ~4MB. Reduce PDF scale or use lower DPI.` }, { status: 413 });
-        }
-
-        let text = "";
-        let confidence = 92;
-        try {
-          if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
-          text = await groqOcrPage(imageBase64, mimeType || "image/jpeg");
-        } catch (groqErr: any) {
-          console.warn(`[OCR] Groq failed, falling back to Gemini... Error: ${groqErr.message}`);
-          if (GEMINI_API_KEY) {
-            text = await geminiOcrPage(imageBase64);
-            confidence = 98;
-          } else {
-            throw groqErr;
-          }
-        }
-        return NextResponse.json({ status: "success", text, confidence, detections: [] });
+        const text = await geminiOcrPage(imageBase64, imgMime);
+        console.log("[OCR] ✓ Gemini succeeded");
+        return NextResponse.json({ status: "success", text, confidence: 90, detections: [], engine: "gemini" });
       } catch (e: any) {
-        console.error("[OCR] Groq/Gemini fallback failed:", e.message);
-        return NextResponse.json({ error: "OCR Failed", detail: e.message }, { status: 503 });
+        errors.push(`Gemini: ${e.message}`);
+        console.warn("[OCR] Gemini failed →", e.message);
       }
     }
 
-    // ══════════════════════════════════════════════
-    // ROUTE 4: Single image + local engines (tesseract/paddleocr/trocr)
-    // ══════════════════════════════════════════════
-    try {
-      const response = await fetch(`${PYTHON_BACKEND}/api/compare-ocr`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, target_model: model }),
-        signal: AbortSignal.timeout(120_000),
-      });
-      if (!response.ok) return NextResponse.json({ error: "Backend Failed", detail: await response.text() }, { status: 500 });
-      const pData = await response.json();
-      
-      // Handle both nested and direct results from backend
-      const m = pData.results?.[model] || pData.results?.["gemini-vision"] || (pData.text ? pData : null);
-      
-      if (m) {
-        return NextResponse.json({ 
-          status: "success",
-          text: m.text || "", 
-          confidence: m.confidence || 0, 
-          detections: m.detections || [] 
-        });
-      }
-      return NextResponse.json({ error: "Model not found in results", detail: JSON.stringify(pData) }, { status: 404 });
-    } catch (e: any) {
-      return NextResponse.json({
-        error: "Python OCR Backend Unreachable",
-        detail: `Local engines require the Python backend.\nStart: .\\venv\\Scripts\\python.exe main.py\nError: ${e.message}`,
-      }, { status: 503 });
-    }
+    // All failed — return all error details so client can show what went wrong
+    return NextResponse.json(
+      { error: "OCR Failed", detail: errors.join(" | ") },
+      { status: 503 }
+    );
+
   } catch (e: any) {
-    return NextResponse.json({ error: "Internal Server Error", detail: e.message }, { status: 500 });
+    console.error("[OCR] Unexpected error:", e.message);
+    return NextResponse.json({ error: "OCR Failed", detail: e.message }, { status: 503 });
   }
 }
