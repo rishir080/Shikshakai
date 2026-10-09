@@ -905,36 +905,32 @@ Respond ONLY with valid JSON in this exact structure, with no markdown code bloc
 # ─────────────────────────────────────────────
 # ─── Strictness level descriptions (used in both evaluate & evaluate-pro) ───────
 _STRICTNESS_INSTRUCTIONS = {
-    1: """GRADING STYLE: VERY LENIENT — School Teacher (Kind & Encouraging)
-  - Give full marks if the student clearly understood the concept, even if wording is informal or imprecise.
-  - Award marks for correct final answers even if working steps are missing.
-  - Overlook minor spelling/grammar mistakes — do NOT deduct for them.
-  - If the student's answer shows the right idea but uses different words than the model answer, give full marks.
-  - Round UP partial scores when in doubt (e.g., 3.5 → 4).
-  - Write warm, encouraging feedback. Focus on what the student did right.""",
-    2: """GRADING STYLE: LENIENT — Supportive Teacher
-  - Award full marks for answers that are mostly correct with minor gaps.
-  - Accept correct final answers with minimal working — do NOT strictly require every step.
-  - Small factual errors that don't affect the core answer: deduct at most 0.5 marks.
-  - Round UP when the student clearly understood the concept.
-  - Feedback should highlight strengths before pointing out weaknesses.""",
-    3: """GRADING STYLE: BALANCED — Standard School Examiner (Default)
-  - Grade fairly: reward correct understanding but deduct for clearly wrong or missing key points.
-  - Require some working for calculation questions, but do not strictly penalise every missing step.
-  - Award partial marks generously when the core concept is correct.
-  - Feedback should be balanced — mention both strengths and improvements needed.""",
-    4: """GRADING STYLE: STRICT — Senior Examiner
-  - Require clear, complete answers. Missing key terms or steps = deduction.
-  - Correct final answer without working shown: award a maximum of 75% of marks for that question.
-  - Vague answers or restated questions: partial marks only.
-  - Do NOT round up. Award exactly what is deserved based on content.
-  - Feedback should be professional and point out every gap.""",
-    5: """GRADING STYLE: VERY STRICT — University / Board Examiner
-  - Apply the strictest academic standards. Every required key term, formula, step, and unit must be present.
-  - Correct final answer without full working shown = maximum 50% of marks.
-  - Vague or incomplete explanations = 0 marks even if partially correct.
-  - Any deviation from the expected answer structure is penalised.
-  - No rounding up. No sympathy marks. Feedback is precise and technical."""
+    1: """GRADING STYLE: VERY LENIENT — Empathetic School Teacher
+  - Give FULL marks if the student clearly understood the core concept, even if wording is informal, messy, or incomplete.
+  - Assume any gaps are due to exam stress or handwriting OCR errors. Give them the benefit of the doubt.
+  - Round up generously (e.g. 2.5 -> 3, 7.5 -> 8).
+  - Never deduct for spelling, grammar, or missing standard units unless it's a math-specific test.
+  - Feedback must be highly encouraging.""",
+    2: """GRADING STYLE: LENIENT — Supportive Human Teacher
+  - Award high marks (80-100%) for answers that demonstrate good overall understanding, even with minor gaps.
+  - Do NOT micro-penalize! Don't deduct marks just because a specific keyword, unit, or minor step is missing.
+  - If the final math answer is correct, give full marks regardless of shown steps.
+  - Round up when the student shows effort.""",
+    3: """GRADING STYLE: BALANCED & REALISTIC — Typical Human Teacher (Default)
+  - Grade holistically like a real human. If a 10-mark answer is mostly correct, give it 8, 9, or 10 marks. DO NOT give 3/10 just because they missed a few minor keywords!
+  - Award partial marks VERY generously when the core concept is visible.
+  - Do not be a robotic nitpicker. Only deduct significant marks (-2 or -3) if a major fundamental concept is completely wrong or missing.
+  - Give the student the benefit of the doubt for messy handwriting or OCR text scanning errors.""",
+    4: """GRADING STYLE: STRICT — Strict Board Examiner
+  - Require clear answers, but remain reasonable.
+  - Deduct 1-2 marks for missing key terms, missing units, or skipped calculation steps.
+  - Award partial marks for correct formulas even if the final answer is wrong.
+  - Do NOT round up.""",
+    5: """GRADING STYLE: VERY STRICT — University Professor
+  - Apply brutal academic standards. 
+  - Every required key term, formula, step, boundary condition, and unit must be present for full marks.
+  - Vague explanations = 0 marks.
+  - Any missing working step in math/physics = massive deduction."""
 }
 
 class EvaluateRequest(BaseModel):
@@ -961,22 +957,21 @@ class EvaluateSingleRequest(BaseModel):
 # ── SHARED HELPERS FOR QUESTION PARSING & NORMALIZATION ─────────────────────
 def _extract_authoritative_marks_map(qp_text: str, student_text: str = "") -> dict:
     """
-    Extracts explicit per-question marks from the question paper text, teacher distribution notes,
-    or student booklet headings.
-    Handles formats like:
-      - 'Q1: 2 marks, Q2: 5 marks, Q3: 10 marks'
-      - '1a) 2 marks\n1b) 3 marks\n2. 5 marks'
-      - 'Section A (2 marks each)\n1. What is...\n2. Define...'
-      - 'Q1. Define velocity [2 Marks]\nQ2. Explain Carnot engine (5M)'
+    Extracts per-question marks from question paper text.
+    Handles ALL common Indian/university exam paper formats.
     """
     marks_map = {}
-    if not qp_text and not student_text:
+    if not qp_text:
         return marks_map
 
-    # 1. First look for key-value pairs like 'Q1: 2', 'Q1 - 5 marks', '1: 2, 2: 5, 3: 10', 'Q1: 2.5'
-    kv_pattern = r'(?:Q(?:uestion)?\.?\s*|\b)(\d+[a-z]?)\s*[:=\-–]\s*(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?|points?)?'
-    for m in re.finditer(kv_pattern, qp_text, flags=re.IGNORECASE):
-        q_label = m.group(1).lower()
+    text = qp_text
+
+    # ── PASS 1: Explicit marks distribution block (from frontend textarea) ──
+    # e.g. "Q1: 5, Q2: 10, Q3: 5, Q4: 15, Q5: 15"
+    # e.g. "[AUTHORITATIVE MARKS DISTRIBUTION]:\nQ1: 5 marks, Q2: 10 marks"
+    dist_pattern = r'(?:Q(?:uestion)?\.?\s*|(?<![0-9]))([1-9]\d?[a-z]?)\s*[:=\-–]\s*(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?|points?)?'
+    for m in re.finditer(dist_pattern, text, flags=re.IGNORECASE):
+        q_label = m.group(1).lower().strip()
         try:
             val = float(m.group(2))
             if 0 < val <= 100:
@@ -984,63 +979,149 @@ def _extract_authoritative_marks_map(qp_text: str, student_text: str = "") -> di
         except ValueError:
             pass
 
-    # 2. Line-by-line parsing for Section headers with 'X marks each' and inline marks brackets
-    lines = [line.strip() for line in qp_text.split('\n') if line.strip()]
+    # ── PASS 2: Table-style "1 | 5 marks" or "1. ... 5" rows ──
+    # e.g. "1 | Define Ohm's law | 5 marks"
+    table_row = r'(?:^|\n)\s*([1-9]\d?[a-z]?)\s*[|\t]\s*[^|\t\n]*[|\t]\s*(\d+(?:\.\d+)?)\s*(?:marks?|m)?\s*(?:\n|$)'
+    for m in re.finditer(table_row, text, flags=re.IGNORECASE | re.MULTILINE):
+        q_label = m.group(1).lower().strip()
+        try:
+            val = float(m.group(2))
+            if 0 < val <= 100:
+                marks_map[q_label] = val
+        except ValueError:
+            pass
+
+    # ── PASS 3: Line-by-line question parsing ──
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
     current_section_mark = None
+    or_group_mark = None
 
     for line in lines:
-        sec_match = re.search(r'(?:section|part|module)\s+[a-z0-9]+\s*[\(\[:\-–].*?(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*each', line, re.IGNORECASE)
+        # Section headers: "Section A (2 marks each)", "Part B – 5 marks each", "Module 1 [10 Marks each]"
+        sec_match = re.search(
+            r'(?:section|part|module|unit)\s+[a-z0-9ivx]+\s*'
+            r'(?:[\(\[:\-–]|–|\s)\s*.*?(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*(?:each|per\s+q(?:uestion)?)?',
+            line, re.IGNORECASE
+        )
         if sec_match:
             try:
                 current_section_mark = float(sec_match.group(1))
             except ValueError:
                 pass
-
-        # If line contains multiple questions (e.g. comma separated), skip line-end matching
-        if ',' in line and ('q' in line.lower() or ':' in line):
             continue
 
-        q_start = re.match(r'^(?:Q(?:uestion)?\.?\s*)?(\d+[a-z]?)\s*[\.\)\:\-]\s*(.*)', line, re.IGNORECASE)
+        # "All questions carry equal marks" → note: we can't infer individual from this alone
+        # "Each question carries X marks"
+        each_match = re.search(r'each\s+(?:question\s+)?(?:carries?|worth|=)\s*(\d+(?:\.\d+)?)\s*marks?', line, re.IGNORECASE)
+        if each_match:
+            try:
+                current_section_mark = float(each_match.group(1))
+            except ValueError:
+                pass
+            continue
+
+        # OR question markers — inherit same mark as the OR group
+        # e.g. "Q.5a OR Q.5b" — both sides same marks
+        or_match = re.match(r'^(?:Q\.?\s*)?(\d+[a-z]?)\s+OR\s+(?:Q\.?\s*)?(\d+[a-z]?)', line, re.IGNORECASE)
+        if or_match and or_group_mark is not None:
+            for grp in [or_match.group(1).lower(), or_match.group(2).lower()]:
+                marks_map.setdefault(grp, or_group_mark)
+            continue
+
+        # Skip comma-separated multi-question lines (already handled in Pass 1)
+        if re.search(r'(?:Q\.?\d|[0-9])\s*[:,]\s*(?:Q\.?\d|\d+)\s*[:,]', line, re.IGNORECASE):
+            continue
+
+        # Main question line patterns:
+        # "Q1." / "1." / "1)" / "1a)" / "Q.1" / "Q.1 " / "Ans 1" at start of line
+        # Also handles "Q.1 question text [5 Marks]" — space as separator after number
+        q_start = re.match(
+            r'^(?:(?:Q(?:uestion)?\.?\s*)|(?:Ans(?:wer)?\.?\s*))?([1-9]\d?[a-z]?)\s*[\.\)\:\-\s]\s*(.*)',
+            line, re.IGNORECASE
+        )
         if q_start:
             q_num = q_start.group(1).lower()
-            rest = q_start.group(2)
+            rest = q_start.group(2).strip()
             explicit_mark = None
-            bracket_match = re.search(r'[\(\[\{](\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)?[\)\]\}]\s*$', rest, re.IGNORECASE)
-            if bracket_match:
-                try:
-                    explicit_mark = float(bracket_match.group(1))
-                except ValueError:
-                    pass
-            else:
-                end_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)\s*$', rest, re.IGNORECASE)
-                if end_match:
+
+            # Search for marks at END of FULL LINE (works even if separator was space)
+            # "[5 Marks]", "(5M)", "(5 marks)", "5 marks", "5M", "(5)"
+            end_patterns = [
+                r'[\(\[\{]\s*(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)?\s*[\)\]\}]\s*$',  # [5 Marks], (5M), {5}
+                r'(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)\s*$',                          # 5 marks, 10M at end
+                r'[\(\[\{]\s*(\d+(?:\.\d+)?)\s*[\)\]\}]\s*$',                        # bare (5) or [10] at end
+            ]
+            # Search both `rest` and full `line` (handles Q.1 space-separated)
+            for search_target in [rest, line]:
+                for pat in end_patterns:
+                    em = re.search(pat, search_target, re.IGNORECASE)
+                    if em:
+                        try:
+                            candidate = float(em.group(1))
+                            if 0 < candidate <= 100:
+                                explicit_mark = candidate
+                                break
+                        except ValueError:
+                            pass
+                if explicit_mark is not None:
+                    break
+
+            # Also check if marks appear after a tab or multiple spaces (table-like)
+            if explicit_mark is None:
+                tab_match = re.search(r'[\t]{2,}(\d+(?:\.\d+)?)\s*(?:marks?|m)?\s*$', line, re.IGNORECASE)
+                if tab_match:
                     try:
-                        explicit_mark = float(end_match.group(1))
+                        candidate = float(tab_match.group(1))
+                        if 0 < candidate <= 100:
+                            explicit_mark = candidate
                     except ValueError:
                         pass
 
-            if explicit_mark is not None and 0 < explicit_mark <= 100:
+            if explicit_mark is not None:
                 marks_map[q_num] = explicit_mark
+                or_group_mark = explicit_mark
             elif q_num not in marks_map and current_section_mark is not None:
                 marks_map[q_num] = current_section_mark
+                or_group_mark = current_section_mark
 
+    # ── PASS 4: Whole-line marks annotations that appear BEFORE or AFTER question text ──
+    # e.g. lines like "5 marks" sitting alone above/below a question number
+    # Only apply if map is still very sparse
+    if len(marks_map) < 2:
+        # Try to find the most common question-mark pattern in the whole text
+        # e.g. "5 marks" repeated near question numbers
+        standalone_marks = re.findall(r'^\s*(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*$', text, re.MULTILINE | re.IGNORECASE)
+        if standalone_marks:
+            # count frequencies
+            from collections import Counter
+            freq = Counter(float(x) for x in standalone_marks)
+            # If we found repeated mark values, this might be the section default
+            most_common_val = freq.most_common(1)[0][0]
+            if 0 < most_common_val <= 50 and not current_section_mark:
+                current_section_mark = most_common_val
+
+    print(f"[MARKS-MAP] Extracted {len(marks_map)} question marks: {marks_map}")
     return marks_map
 
 
-def _lookup_marks(q_no: str, marks_map: dict, default_mark = None):
+def _lookup_marks(q_no: str, marks_map: dict, default_mark=None):
     """
     Looks up the allocated mark for a question number string (e.g. 'Q1', '1a', 'Ans 2', '3b)').
+    Tries exact match, then parent question match (e.g. '1a' → '1').
     """
     if not marks_map:
         return default_mark
     clean_no = re.sub(r'^(?:Q(?:uestion)?\.?|Ans\.?)\s*', '', str(q_no).strip(), flags=re.IGNORECASE).lower()
-    clean_no = clean_no.rstrip('.)')
+    clean_no = clean_no.strip('.) ')
+    # Exact match
     if clean_no in marks_map:
         return marks_map[clean_no]
-    num_match = re.match(r'^(\d+)', clean_no)
-    if num_match and num_match.group(1) in marks_map:
-        return marks_map[num_match.group(1)]
+    # Strip sub-part letter: '1a' → '1', '2b' → '2'
+    num_only = re.match(r'^(\d+)', clean_no)
+    if num_only and num_only.group(1) in marks_map:
+        return marks_map[num_only.group(1)]
     return default_mark
+
 
 
 def _normalize_question_obj(item: dict) -> dict:
@@ -1439,10 +1520,13 @@ STEP 2 — MAP STUDENT ANSWERS:
 - Students sometimes write out of order — find ALL answers
 - Never skip a question that the student attempted
 
-STEP 3 — GRADE EACH QUESTION LIKE A REAL TEACHER:
+STEP 3 — GRADE EACH QUESTION LIKE A REAL TEACHER (HOLISTIC & FAIR):
 - marks_total = EXACT marks this question is worth (from paper/marks table above)
 - marks_awarded = what the student actually earned based on their answer quality
-- Be specific: what did they write correctly? what was wrong or missing?
+- Apply the grading strictness level requested.
+- BE REALISTIC: Do NOT micro-penalize. If a 10-mark answer demonstrates solid understanding but misses one minor unit, give it 9 or 10 marks, NOT 4 marks!
+- Acknowledge that students write exams under time pressure. If the core concept, derivation, or logic is visible, award the majority of the marks.
+- Be specific in feedback: what did they write correctly? what was a major omission?
 
 MANDATORY MARKS RULES (CRITICAL):
 ✦ marks_total MUST match the actual question paper weight for each question
@@ -2252,14 +2336,14 @@ STEP 2 — ASSIGN marks_total (CRITICAL):
 - NEVER calculate marks_total = paper_total ÷ number_of_questions
 - If Q1 = 2 marks and Q2 = 10 marks, marks_total must reflect EXACTLY that
 
-STEP 3 — GRADE LIKE A REAL TEACHER:
+STEP 3 — GRADE LIKE A REAL TEACHER (HOLISTIC & FAIR):
 - Grade each answer individually based on its actual content
-- Full marks: all key points, correct formula/derivation, complete explanation
-- Partial marks: right idea but missing key terms, units, steps, or diagrams
-- Zero: wrong, blank, or just repeats the question
+- Apply the strictness level requested.
+- BE REALISTIC: Do NOT micro-penalize. If a 10-mark answer demonstrates solid understanding but misses one minor unit or concluding sentence, give it 9 or 10 marks, NOT 4 marks!
+- Acknowledge that students write exams under time pressure. If the core concept, derivation, or logic is visible, award the majority of the marks.
 - For calculations: award method marks even if final answer is wrong
 - For theory: check key terms, logical structure, and completeness
-
+- Do not be a robotic nitpicker. Only deduct significant marks if a major fundamental concept is missing or wrong.
 STEP 4 — HANDLE CHOICE/OR QUESTIONS:
 - "Attempt any X out of Y": grade first X answers. Rest: is_counted=false, marks_awarded=0
 - "OR" questions: grade the student's chosen answer. Other option: is_counted=false, marks_awarded=0

@@ -18,16 +18,23 @@ const CLAUDE_MODEL = "claude-3-haiku-20240307";
 // 4th: Gemini Vision — fallback models
 const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"];
 
-const OCR_PROMPT = `You are an expert OCR transcription system specialized in reading handwritten exam answer sheets.
+const OCR_PROMPT = `You are an expert OCR transcription system specialized in reading exam papers and handwritten answer sheets.
 
 Your task: Transcribe EVERY word, question header, number, mathematical formula, diagram label, and symbol accurately as written.
 
 Rules:
 1. QUESTION NUMBERS & HEADERS: Pay extreme attention to question identifiers (e.g., Q1, Ans 1, 1(a), Q.2b, Part B, Section A). Always transcribe them clearly on their own line.
-2. MATHEMATICAL & SCIENTIFIC FORMULAS: Transcribe equations, fractions, square roots, integrals, matrices, chemical formulas, and units (m/s^2, kg, Ohm) precisely.
-3. PRESERVE STRUCTURE: Keep original line breaks, bullet points, and step-by-step layout.
-4. FAITHFULNESS: Do NOT summarize, skip, or rephrase anything. Mark completely illegible words as [illegible].
-5. BLANK PAGES: If page has no writing, return: [blank page]
+2. MARKS NOTATIONS — CRITICAL: Preserve ALL marks annotations EXACTLY as written. Examples:
+   - "(5 Marks)" or "(5M)" at end of a question line
+   - "[10 marks]" or "[2M]" in brackets
+   - "5 marks" appearing after a question
+   - "Section A (2 marks each)" or "Part B – 10 marks each"
+   - "Q1: 5 marks, Q2: 10 marks" style lists
+   Never remove, rewrite, or skip marks notations — they are essential for grading.
+3. MATHEMATICAL & SCIENTIFIC FORMULAS: Transcribe equations, fractions, square roots, integrals, matrices, chemical formulas, and units (m/s^2, kg, Ohm) precisely.
+4. PRESERVE STRUCTURE: Keep original line breaks, bullet points, and step-by-step layout.
+5. FAITHFULNESS: Do NOT summarize, skip, or rephrase anything. Mark completely illegible words as [illegible].
+6. BLANK PAGES: If page has no writing, return: [blank page]
 
 Return ONLY the transcribed text. No intro, no conversational remarks.`;
 
