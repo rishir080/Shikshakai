@@ -1513,12 +1513,22 @@ END_SECTION`;
 
         const pdfBase64 = await fileToBase64(answerSheetFile!);
 
+        let authoritativeQpText = (questionPaperText || "").trim();
+        if (marksDistribution && marksDistribution.trim()) {
+          authoritativeQpText = authoritativeQpText
+            ? `${authoritativeQpText}\n\n[AUTHORITATIVE MARKS DISTRIBUTION]:\n${marksDistribution.trim()}`
+            : `Marks Distribution: ${marksDistribution.trim()}`;
+        }
+        if (!authoritativeQpText) {
+          authoritativeQpText = `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}`;
+        }
+
         evalRes = await fetch("/api/evaluate-pro", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             pdfBase64: pdfBase64,
-            question_paper_text: questionPaperText || `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
+            question_paper_text: authoritativeQpText,
             model_answers_text: modelAnswersText || syllabusText,
             total_marks: parseInt(totalMarksInput) || 0,
             target_model: "tesseract",
@@ -1528,12 +1538,22 @@ END_SECTION`;
 
       } else {
         // Standard Evaluation
+        let authoritativeQpText = (questionPaperText || "").trim();
+        if (marksDistribution && marksDistribution.trim()) {
+          authoritativeQpText = authoritativeQpText
+            ? `${authoritativeQpText}\n\n[AUTHORITATIVE MARKS DISTRIBUTION]:\n${marksDistribution.trim()}`
+            : `Marks Distribution: ${marksDistribution.trim()}`;
+        }
+        if (!authoritativeQpText) {
+          authoritativeQpText = `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}`;
+        }
+
         evalRes = await fetch("/api/evaluate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             student_text: studentText,
-            question_paper_text: questionPaperText || `Exam: ${paperTitle || "Exam"} | Subject: ${subject || "N/A"} | Total Marks: ${totalMarksInput}\nMarks Distribution: ${marksDistribution}`,
+            question_paper_text: authoritativeQpText,
             model_answers_text: modelAnswersText,
             syllabus_text: syllabusText,
             total_marks: parseInt(totalMarksInput) || 0,

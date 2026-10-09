@@ -9,12 +9,9 @@ import { NextRequest, NextResponse } from "next/server";
 const GROQ_API_KEY      = process.env.GROQ_API_KEY      || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const GEMINI_API_KEY    = process.env.GEMINI_API_KEY    || "";
+const PYTHON_BACKEND    = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8080";
 
-// Two separate Groq vision models — each has its own TPM/RPM bucket
-// qwen3.8-27b is fast and does not waste tokens on thinking blocks (~700ms per page)
-// qwen3.6-27b is the backup
-const GROQ_MODEL_A = "qwen/qwen3.8-27b";   // primary (fast, direct, high throughput)
-const GROQ_MODEL_B = "qwen/qwen3.6-27b";   // backup
+const GROQ_MODEL_A = "qwen/qwen3.8-27b";
 
 // 3rd: Claude Haiku — excellent vision, reliable API access
 const CLAUDE_MODEL = "claude-3-haiku-20240307";
@@ -62,8 +59,7 @@ async function groqOcrPage(imgBase64: string, mimeType = "image/jpeg"): Promise<
   const sizeKB = Math.round(imgBase64.length * 0.75 / 1024);
   if (sizeKB > 4000) throw new Error(`Image too large for Groq: ${sizeKB} KB`);
 
-  // Try each model up to 3 attempts with backoff on 429
-  const models = [GROQ_MODEL_A, GROQ_MODEL_B];
+  const models = [GROQ_MODEL_A];
 
   for (const model of models) {
     console.log(`[OCR/Groq] ${sizeKB} KB → ${model}`);
@@ -252,6 +248,27 @@ export async function POST(req: NextRequest) {
         errors.push(`Gemini: ${e.message}`);
         console.warn("[OCR] Gemini failed →", e.message);
       }
+    }
+
+    // ── 4. Try Local Python OCR (TrOCR + Tesseract fallback) ──
+    try {
+      console.log(`[OCR] Trying local Python backend fallback at ${PYTHON_BACKEND}/api/local-ocr ...`);
+      const localRes = await fetch(`${PYTHON_BACKEND}/api/local-ocr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64, engine: "trocr" }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (localRes.ok) {
+        const localData = await localRes.json();
+        if (localData.status === "success" && localData.text) {
+          console.log("[OCR] ✓ Local Python OCR succeeded");
+          return NextResponse.json({ status: "success", text: localData.text, confidence: localData.confidence || 88, detections: [], engine: "local-python" });
+        }
+      }
+    } catch (e: any) {
+      errors.push(`Local Python OCR: ${e.message}`);
+      console.warn("[OCR] Local Python OCR fallback failed →", e.message);
     }
 
     // All failed — return all error details so client can show what went wrong

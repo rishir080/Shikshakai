@@ -959,6 +959,90 @@ class EvaluateSingleRequest(BaseModel):
 
 
 # ── SHARED HELPERS FOR QUESTION PARSING & NORMALIZATION ─────────────────────
+def _extract_authoritative_marks_map(qp_text: str, student_text: str = "") -> dict:
+    """
+    Extracts explicit per-question marks from the question paper text, teacher distribution notes,
+    or student booklet headings.
+    Handles formats like:
+      - 'Q1: 2 marks, Q2: 5 marks, Q3: 10 marks'
+      - '1a) 2 marks\n1b) 3 marks\n2. 5 marks'
+      - 'Section A (2 marks each)\n1. What is...\n2. Define...'
+      - 'Q1. Define velocity [2 Marks]\nQ2. Explain Carnot engine (5M)'
+    """
+    marks_map = {}
+    if not qp_text and not student_text:
+        return marks_map
+
+    # 1. First look for key-value pairs like 'Q1: 2', 'Q1 - 5 marks', '1: 2, 2: 5, 3: 10', 'Q1: 2.5'
+    kv_pattern = r'(?:Q(?:uestion)?\.?\s*|\b)(\d+[a-z]?)\s*[:=\-–]\s*(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?|points?)?'
+    for m in re.finditer(kv_pattern, qp_text, flags=re.IGNORECASE):
+        q_label = m.group(1).lower()
+        try:
+            val = float(m.group(2))
+            if 0 < val <= 100:
+                marks_map[q_label] = val
+        except ValueError:
+            pass
+
+    # 2. Line-by-line parsing for Section headers with 'X marks each' and inline marks brackets
+    lines = [line.strip() for line in qp_text.split('\n') if line.strip()]
+    current_section_mark = None
+
+    for line in lines:
+        sec_match = re.search(r'(?:section|part|module)\s+[a-z0-9]+\s*[\(\[:\-–].*?(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*each', line, re.IGNORECASE)
+        if sec_match:
+            try:
+                current_section_mark = float(sec_match.group(1))
+            except ValueError:
+                pass
+
+        # If line contains multiple questions (e.g. comma separated), skip line-end matching
+        if ',' in line and ('q' in line.lower() or ':' in line):
+            continue
+
+        q_start = re.match(r'^(?:Q(?:uestion)?\.?\s*)?(\d+[a-z]?)\s*[\.\)\:\-]\s*(.*)', line, re.IGNORECASE)
+        if q_start:
+            q_num = q_start.group(1).lower()
+            rest = q_start.group(2)
+            explicit_mark = None
+            bracket_match = re.search(r'[\(\[\{](\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)?[\)\]\}]\s*$', rest, re.IGNORECASE)
+            if bracket_match:
+                try:
+                    explicit_mark = float(bracket_match.group(1))
+                except ValueError:
+                    pass
+            else:
+                end_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:marks?|m|pts?)\s*$', rest, re.IGNORECASE)
+                if end_match:
+                    try:
+                        explicit_mark = float(end_match.group(1))
+                    except ValueError:
+                        pass
+
+            if explicit_mark is not None and 0 < explicit_mark <= 100:
+                marks_map[q_num] = explicit_mark
+            elif q_num not in marks_map and current_section_mark is not None:
+                marks_map[q_num] = current_section_mark
+
+    return marks_map
+
+
+def _lookup_marks(q_no: str, marks_map: dict, default_mark = None):
+    """
+    Looks up the allocated mark for a question number string (e.g. 'Q1', '1a', 'Ans 2', '3b)').
+    """
+    if not marks_map:
+        return default_mark
+    clean_no = re.sub(r'^(?:Q(?:uestion)?\.?|Ans\.?)\s*', '', str(q_no).strip(), flags=re.IGNORECASE).lower()
+    clean_no = clean_no.rstrip('.)')
+    if clean_no in marks_map:
+        return marks_map[clean_no]
+    num_match = re.match(r'^(\d+)', clean_no)
+    if num_match and num_match.group(1) in marks_map:
+        return marks_map[num_match.group(1)]
+    return default_mark
+
+
 def _normalize_question_obj(item: dict) -> dict:
     awarded = float(item.get("marks_awarded", item.get("score", item.get("marks", 0))))
     total_m = float(item.get("marks_total", item.get("max_marks", item.get("total_marks", 5))))
@@ -1182,32 +1266,62 @@ async def evaluate_answers(req: EvaluateRequest):
             images = _pdf_bytes_to_images(pdf_bytes, dpi=150)
             if images:
                 page_texts = []
+                HANDWRITING_OCR_PROMPT = """You are a highly trained professional document transcriber specializing in handwritten exam answer sheets.
+Your job is to read this handwritten answer sheet page and transcribe it EXACTLY as written.
+
+CRITICAL RULES — FOLLOW EVERY ONE:
+1. PRESERVE every question number exactly (e.g. "Q1", "1.", "1a)", "Ans. 3b", "Q.5 OR Q.6")
+2. PRESERVE every section heading (e.g. "Section A", "Part B", "Module 3")
+3. PRESERVE blank lines between answers — these mark question boundaries
+4. DO NOT correct spelling or grammar — transcribe EXACTLY what is written
+5. If a number or label appears before a paragraph, keep it on its OWN line
+6. For math/formulas: write them as clearly as possible using text notation (e.g. V=IR, E=mc^2)
+7. If text is illegible, write [illegible] — never guess or skip
+8. NEVER merge two questions into one paragraph
+9. Return ONLY the transcribed text — no commentary, no "Here is the text:", no preamble
+
+IMPORTANT: Question numbers written by the student (like "1.", "Q2", "Ans 3b") are CRITICAL markers — they tell the examiner what question each answer belongs to. Never skip or merge them."""
+
                 for i, img in enumerate(images):
-                    try:
-                        buffered = io.BytesIO()
-                        img.convert("RGB").save(buffered, format="JPEG", quality=82)
-                        b64 = base64.b64encode(buffered.getvalue()).decode()
-                        if groq_key:
-                            res = await asyncio.to_thread(
-                                _call_groq_api_direct,
-                                api_key=groq_key,
-                                model="qwen/qwen3.8-27b",
-                                messages=[{
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": "Transcribe this handwritten exam answer sheet page exactly as written. Preserve all question numbers, section headers, formulas, and line breaks. Return ONLY transcribed text."},
-                                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                                    ]
-                                }],
-                                max_tokens=2000,
-                                temperature=0,
-                                timeout=90.0
-                            )
-                            t = res.choices[0].message.content.strip()
-                            page_texts.append(f"── Page {i+1} ──\n{t}")
-                    except Exception as pg_err:
-                        print(f"⚠️ [EVAL] OCR error on page {i+1}: {pg_err}")
-                        page_texts.append(f"── Page {i+1} ──\n[Note: Page transcribed with standard fallback]")
+                    for attempt in range(3):
+                        try:
+                            buffered = io.BytesIO()
+                            # Higher quality JPEG for handwriting
+                            img.convert("RGB").save(buffered, format="JPEG", quality=90)
+                            b64 = base64.b64encode(buffered.getvalue()).decode()
+                            if groq_key:
+                                res = await asyncio.to_thread(
+                                    _call_groq_api_direct,
+                                    api_key=groq_key,
+                                    model="qwen/qwen3.8-27b",
+                                    messages=[{
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": HANDWRITING_OCR_PROMPT},
+                                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                                        ]
+                                    }],
+                                    max_tokens=3000,
+                                    temperature=0,
+                                    timeout=120.0
+                                )
+                                t = res.choices[0].message.content.strip()
+                                # Remove any preamble the model added
+                                t = re.sub(r'^(?:here is|the transcribed|transcription:?)\s*', '', t, flags=re.IGNORECASE).strip()
+                                page_texts.append(f"── Page {i+1} ──\n{t}")
+                                print(f"✅ [EVAL-OCR] Page {i+1} transcribed ({len(t)} chars)")
+                                break
+                        except Exception as pg_err:
+                            err_str = str(pg_err).lower()
+                            is_rate = any(x in err_str for x in ("429", "rate limit", "tpm", "quota"))
+                            if is_rate and attempt < 2:
+                                wait = (attempt + 1) * 8
+                                print(f"⏳ [EVAL-OCR] Rate limited on page {i+1}, waiting {wait}s...")
+                                await asyncio.sleep(wait)
+                            else:
+                                print(f"⚠️ [EVAL] OCR error on page {i+1}: {pg_err}")
+                                page_texts.append(f"── Page {i+1} ──\n[OCR failed for this page]")
+                                break
                 if page_texts:
                     student_text = "\n\n".join(page_texts)
 
@@ -1229,111 +1343,152 @@ async def evaluate_answers(req: EvaluateRequest):
 
         # 3. Formulate unified grading prompt
         declared_total = req.total_marks if req.total_marks > 0 else 50
-        qp_context = req.question_paper_text.strip() if req.question_paper_text.strip() else "Not provided explicitly — infer all questions and allocated marks from student answers and declared total marks."
+        authoritative_marks_map = _extract_authoritative_marks_map(req.question_paper_text, student_text)
+
+        marks_instruction_block = ""
+        if authoritative_marks_map:
+            marks_lines = [f"  * Question {k.upper()}: EXACTLY {v} marks" for k, v in authoritative_marks_map.items()]
+            marks_instruction_block = (
+                "\n=====================================\n"
+                "AUTHORITATIVE MARKS SPECIFICATION (STRICT - DO NOT SPLIT EQUALLY):\n"
+                "The following marks per question are MANDATED by the teacher/paper:\n"
+                + "\n".join(marks_lines) + "\n"
+                "You MUST set marks_total for each question to EXACTLY the mark value specified above.\n"
+                "NEVER divide the paper total equally across questions (e.g. NEVER make every question 5.6 or similar)!\n"
+                "Each question has distinct allocated weight.\n"
+                "=====================================\n"
+            )
+        else:
+            marks_instruction_block = (
+                "\n=====================================\n"
+                "MARKS DISTRIBUTION GUIDELINE:\n"
+                "Extract each question's actual allocated marks from the question paper (e.g. [2 Marks], [5 Marks], [10 Marks]).\n"
+                "DO NOT divide total marks equally across questions (e.g. NEVER assign 5.6 to every question)!\n"
+                "Standard academic questions carry clean whole marks: short answer (1-2 marks), medium (3-5 marks), long/essay (8-10 marks).\n"
+                "Ensure each question's marks_total reflects its actual depth and weight.\n"
+                "=====================================\n"
+            )
+
+        qp_context = req.question_paper_text.strip() if req.question_paper_text.strip() else "Not provided — infer questions and marks from student answers."
         ref_context = (
             req.model_answers_text.strip()[:5000] if req.model_answers_text.strip()
             else req.syllabus_text.strip()[:5000] if req.syllabus_text.strip()
             else "Not provided — grade based on academic accuracy, completeness, formulas, diagrams, and step-by-step logic."
         )
 
-        EVAL_PROMPT = f"""You are an experienced, professional academic teacher and university board examiner.
-You are now grading ONE student's complete answer booklet against the provided Question Paper.
+        # Build a clear, explicit marks table to inject into the prompt
+        if authoritative_marks_map:
+            marks_table_lines = ["MARKS PER QUESTION (MANDATORY — READ BEFORE GRADING):"]
+            for k, v in authoritative_marks_map.items():
+                marks_table_lines.append(f"  Q{k.upper()} = {v} marks")
+            marks_table_lines.append("You MUST set marks_total for each question to EXACTLY the value above.")
+            marks_table_lines.append("FORBIDDEN: Do NOT divide total marks equally (e.g. NEVER assign 5.0 or 5.6 to EVERY question).")
+            marks_table = "\n".join(marks_table_lines)
+        else:
+            marks_table = (
+                "MARKS PER QUESTION: Not explicitly provided as a distribution list.\n"
+                "ACTION REQUIRED: Extract marks from the Question Paper text above.\n"
+                "Look for patterns like: '[5 Marks]', '(2M)', '10 marks', 'Section A (2 marks each)', 'Q1: 5, Q2: 10'.\n"
+                "Assign clean whole-number marks that match the question's complexity:\n"
+                "  - Short answer / definition: 2-5 marks\n"
+                "  - Medium explanation: 5-8 marks\n"
+                "  - Long / derivation / essay: 10-15 marks\n"
+                "STRICTLY FORBIDDEN: Do NOT assign equal marks to all questions (e.g. NOT every question = 5.0 marks)."
+            )
 
-GRADING MODE: {mode}
-PAPER TOTAL MARKS: {declared_total}
+        EVAL_PROMPT = f"""You are a professional academic examiner and senior teacher with 20+ years of experience grading exam papers.
+You are grading ONE student's complete answer booklet. Read everything carefully like a real teacher.
 
-STRICTNESS: {strictness_instruction}
+════════════════════════════════════════════════════
+PAPER DETAILS
+════════════════════════════════════════════════════
+Total Marks: {declared_total}
+Grading Mode: {mode}
+Strictness: {strictness_instruction}
 
-QUESTION PAPER:
+════════════════════════════════════════════════════
+QUESTION PAPER
+════════════════════════════════════════════════════
 {qp_context[:6000]}
+
+════════════════════════════════════════════════════
+{marks_table}
+════════════════════════════════════════════════════
 
 REFERENCE / MODEL ANSWERS / SYLLABUS:
 {ref_context}
 
-STUDENT ANSWER BOOKLET (ALL PAGES):
+════════════════════════════════════════════════════
+STUDENT'S ANSWER BOOKLET
+════════════════════════════════════════════════════
 {student_text}
 
-=====================================
-EXAMINER RULES - FOLLOW ALL
-=====================================
+════════════════════════════════════════════════════
+EXAMINER INSTRUCTIONS
+════════════════════════════════════════════════════
 
-STEP 0 - BUILD MARKS MAP FIRST:
-Read every line of the Question Paper. Map each question/sub-question to its marks.
-marks_total in your output MUST match this map exactly.
+STEP 1 — READ THE QUESTION PAPER:
+- Identify every question and sub-question (Q1, Q1a, Q1b, Q2, Q3a, etc.)
+- For each question, note its EXACT marks from the paper or the marks table above
+- Identify which questions are mandatory vs. optional/choice
+- Identify "OR" questions (student picks one)
 
-RULE 1 - DETECT ALL QUESTIONS (100%):
-* Read EVERY page. Students write out of order.
-* Match answers by headers ("Q1", "1a)", "Ans 3b") AND content.
-* Every sub-question gets its own row. NEVER omit an attempted question.
+STEP 2 — MAP STUDENT ANSWERS:
+- Read every page of the student booklet
+- Match each written answer to its question using: question number labels (Q1, 1a, Ans 3b) AND content
+- Students sometimes write out of order — find ALL answers
+- Never skip a question that the student attempted
 
-RULE 2 - CHOICE / OR QUESTIONS (NO PENALTIES):
-* Unchosen optional questions: is_counted=false, marks_awarded=0, status="optional_skipped"
-* Do NOT reduce score for skipped optional questions.
+STEP 3 — GRADE EACH QUESTION LIKE A REAL TEACHER:
+- marks_total = EXACT marks this question is worth (from paper/marks table above)
+- marks_awarded = what the student actually earned based on their answer quality
+- Be specific: what did they write correctly? what was wrong or missing?
 
-RULE 3 - UNATTEMPTED MANDATORY:
-* Include with marks_awarded=0, status="not_attempted", is_counted=true
+MANDATORY MARKS RULES (CRITICAL):
+✦ marks_total MUST match the actual question paper weight for each question
+✦ NEVER assign the same marks_total to all questions (e.g. NOT all = 5.0)
+✦ NEVER calculate marks_total = total_marks ÷ number_of_questions
+✦ If Q1 is worth 2 marks and Q2 is worth 10 marks — show EXACTLY that difference
+✦ total_possible = {declared_total} (always)
 
-RULE 4 - MATHEMATICS MUST BE EXACT:
-* total_possible MUST = {declared_total}
-* Sum of marks_total where is_counted=true MUST = {declared_total}
-* total_awarded = exact sum of marks_awarded where is_counted=true
-* percentage = round(total_awarded / total_possible * 100, 1)
-* Grade: >=90=A+, >=80=A, >=70=B, >=60=C, >=50=D, <50=F
+CHOICE/OR QUESTIONS:
+- If "attempt any 3 out of 5": grade FIRST 3 the student wrote. Rest: is_counted=false, marks_awarded=0
+- "OR" questions: grade the one the student chose. Other option: is_counted=false, marks_awarded=0
+- Never penalize for not attempting optional questions
 
-RULE 5 - GENUINE PER-QUESTION REASONING & MARKS DEDUCTION BREAKDOWN (CRITICAL):
+UNATTEMPTED MANDATORY QUESTIONS:
+- Include with marks_awarded=0, status="not_attempted", is_counted=true
 
-Every question MUST have its own COMPLETELY UNIQUE, QUESTION-SPECIFIC feedback and marks reduction explanation.
-NEVER repeat or reuse identical reasons, remarks, or generic placeholders across different questions!
+FEEDBACK QUALITY:
+- Each question needs UNIQUE feedback — never copy-paste the same reason across questions
+- State exactly: what formula/step/key term was missing
+- Example: "Lost 2 marks — did not write the SI unit for resistance (Ohms) and missed the temperature-constancy condition"
+- what_was_correct: Quote specific things the student wrote correctly
 
-For EACH question, you MUST provide:
-1. "marks_awarded": float (between 0 and marks_total)
-2. "marks_total": float (matching question paper marks)
-3. "marks_reduced": float (exact deduction: marks_total - marks_awarded, 0.0 if full marks)
-4. "why_marks_reduced":
-   - If marks_awarded < marks_total: 1-2 clear, specific sentences explaining EXACTLY why marks were reduced on THIS question (name the exact missing equation, condition, step, diagram, or error).
-   - If full marks awarded: "Full marks awarded. Comprehensive, accurate response meeting all rubric criteria."
-   - If not attempted: "Full marks deducted because this required question was not attempted in the answer booklet."
-   - If optional skipped: "Optional choice question skipped by student (no penalty applied)."
-5. "deductions": array of specific deductions for THIS question:
-   [
-     {{"marks_lost": 1.5, "issue": "Name of specific missing concept/step", "explanation": "Why this specific gap caused marks deduction"}}
-   ]
-   (leave empty [] if full marks or optional skipped)
-6. "what_was_correct": State specifically what the student wrote correctly that earned marks.
-7. "feedback": Professional teacher evaluation of this answer (2-3 sentences).
-8. "improvement": ONE actionable, concrete tip to improve this specific answer.
-9. "red_pen_comment": Crisp teacher annotation (max 10 words) for margin red pen mark.
-10. "student_answer_summary": 20-30 words describing what student actually wrote.
-
-PAPER LEVEL:
-- "total_awarded": sum of marks_awarded for is_counted=true questions
-- "total_possible": {declared_total}
-- "total_reduced": {declared_total} - total_awarded
-- "mark_loss_analysis": Array of 3-6 specific bullet points summarizing where marks were lost across the paper (e.g. "Q1: -2 marks for missing temperature constancy condition in Ohm's Law", "Q3: -3 marks for sign error in loop current analysis").
-- "overall_feedback": 3-4 sentences synthesizing performance, strongest topic, primary mark loss area, and next revision steps.
-
-OUTPUT - Respond ONLY with this exact JSON (NO markdown fences, NO extra text):
+════════════════════════════════════════════════════
+OUTPUT — Valid JSON only, no markdown fences:
+════════════════════════════════════════════════════
 {{
   "questions": [
     {{
       "question_no": "1a",
       "question": "Full question text from question paper",
-      "section": "Module 1 / Section A",
+      "section": "Section A / Module 1",
       "marks_awarded": 8.0,
       "marks_total": 10.0,
       "marks_reduced": 2.0,
       "status": "partial",
       "is_counted": true,
-      "student_answer_summary": "Student stated main formula and described working principle...",
-      "why_marks_reduced": "Lost 2.0 marks: omitted the required validity conditions and did not specify SI units for variables.",
+      "student_answer_summary": "20-30 words: what the student actually wrote for this question",
+      "why_marks_reduced": "Specific reason: exactly what was missing or wrong that caused deduction",
       "deductions": [
-        {{"marks_lost": 1.0, "issue": "Missing validity boundary conditions", "explanation": "Did not specify that Ohm's Law requires constant temperature and linear material."}},
-        {{"marks_lost": 1.0, "issue": "SI units omitted", "explanation": "Did not state Volts (V), Amperes (A), and Ohms in variable definitions."}}
+        {{"marks_lost": 1.0, "issue": "Missing boundary condition", "explanation": "Did not state Ohm's Law requires constant temperature"}},
+        {{"marks_lost": 1.0, "issue": "SI units omitted", "explanation": "Resistance unit Ohm (Ω) not written"}}
       ],
-      "what_was_correct": "Correctly stated V = I * R and explained direct proportionality between voltage and current.",
-      "feedback": "Solid conceptual understanding, but formal physical validity criteria and complete units were left out.",
-      "improvement": "Always state boundary conditions and standard SI units when defining physical laws.",
-      "red_pen_comment": "Conditions & SI units missing (-2)",
+      "what_was_correct": "Correctly wrote V=IR formula and explained current-voltage relationship",
+      "feedback": "2-3 sentence professional teacher comment on this specific answer",
+      "improvement": "One specific actionable tip for this answer",
+      "red_pen_comment": "Short margin note (max 10 words)",
       "page_no": "1"
     }}
   ],
@@ -1343,9 +1498,10 @@ OUTPUT - Respond ONLY with this exact JSON (NO markdown fences, NO extra text):
   "percentage": 0.0,
   "grade": "F",
   "mark_loss_analysis": [
-    "Q1: Lost 2 marks for omitted boundary conditions and units."
+    "Q1: -2 marks — missing temperature condition and Ohm unit",
+    "Q2: -5 marks — derivation incomplete, final equation not written"
   ],
-  "overall_feedback": "Student demonstrated good fundamental knowledge. Main mark losses stemmed from missing technical boundary conditions."
+  "overall_feedback": "3-4 sentence summary of the student's overall performance, strongest area, main weakness, and revision advice"
 }}"""
 
         eval_data = None
@@ -1405,9 +1561,10 @@ OUTPUT - Respond ONLY with this exact JSON (NO markdown fences, NO extra text):
             matches = list(re.finditer(header_pattern, student_text, flags=re.IGNORECASE))
             target_total = float(req.total_marks or 50)
             if matches and len(matches) > 1:
-                per_q_marks = round(target_total / len(matches), 1)
                 for idx, m in enumerate(matches):
                     q_num = m.group(1) or m.group(2) or m.group(4) or str(idx + 1)
+                    auth_m = _lookup_marks(str(q_num), authoritative_marks_map, default_mark=None)
+                    per_q_marks = auth_m if auth_m is not None else 5.0
                     start = m.start()
                     end = matches[idx + 1].start() if idx + 1 < len(matches) else len(student_text)
                     snippet = student_text[start:end].strip()
@@ -1458,6 +1615,29 @@ OUTPUT - Respond ONLY with this exact JSON (NO markdown fences, NO extra text):
                 }]
 
         # ── 7. AUTHORITATIVE AGGREGATION & MATHEMATICAL RECONCILIATION ──────────
+        # Reconcile marks_total against authoritative_marks_map if available
+        if authoritative_marks_map:
+            for q in all_qs:
+                q_no = str(q.get("question_no", ""))
+                auth_m = _lookup_marks(q_no, authoritative_marks_map, default_mark=None)
+                if auth_m is not None:
+                    q["marks_total"] = auth_m
+                    if float(q.get("marks_awarded", 0)) > auth_m:
+                        q["marks_awarded"] = auth_m
+                    q["marks_reduced"] = max(0.0, round(auth_m - float(q.get("marks_awarded", 0)), 1))
+        else:
+            # If model assigned uniform fractional marks like 5.6 across all questions, clean them to integers
+            distinct_totals = {round(float(q.get("marks_total", 0)), 1) for q in all_qs if q.get("marks_total")}
+            if len(distinct_totals) == 1 and len(all_qs) > 1:
+                single_val = list(distinct_totals)[0]
+                if single_val not in (1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0):
+                    clean_val = round(single_val) or 5.0
+                    for q in all_qs:
+                        q["marks_total"] = clean_val
+                        if float(q.get("marks_awarded", 0)) > clean_val:
+                            q["marks_awarded"] = clean_val
+                        q["marks_reduced"] = max(0.0, round(clean_val - float(q.get("marks_awarded", 0)), 1))
+
         # If no question paper was provided, filter out hallucinated unattempted questions
         if not req.question_paper_text.strip():
             all_qs = [q for q in all_qs if q.get("status") != "not_attempted"]
@@ -2008,99 +2188,105 @@ IMPORTANT: Question numbers written by the student (like "1.", "Q2", "Ans 3b") a
             return {"status": "error", "message": "No GROQ_API_KEY or GEMINI_API_KEY set for Pro Mode"}
             
         student_text = "\n\n".join(full_text_chunks)
+        pro_auth_marks = _extract_authoritative_marks_map(req.question_paper_text, student_text)
+
+        if pro_auth_marks:
+            pro_marks_table_lines = ["MARKS PER QUESTION (MANDATORY — SET BEFORE GRADING):"]
+            for k, v in pro_auth_marks.items():
+                pro_marks_table_lines.append(f"  Q{k.upper()} = {v} marks")
+            pro_marks_table_lines.append("You MUST assign marks_total for each question to EXACTLY the value listed above.")
+            pro_marks_table_lines.append("NEVER divide total marks equally across all questions!")
+            pro_marks_table = "\n".join(pro_marks_table_lines)
+        else:
+            pro_marks_table = (
+                "MARKS PER QUESTION: Read directly from the question paper above.\n"
+                "Look for patterns like: '(5 Marks)', '[2M]', '10 marks', 'Section A: 2 marks each'.\n"
+                "DO NOT assign the same marks to all questions. Assign distinct marks that reflect each question's weight.\n"
+                "Short answer=2-3 marks, Medium=5-8 marks, Long/essay=10-15 marks."
+            )
 
         # Clamp strictness level to valid range
         pro_strictness = max(1, min(5, req.strictness_level))
         pro_strictness_instruction = _STRICTNESS_INSTRUCTIONS[pro_strictness]
         print(f"🎯 [PRO-MODE] Strictness level: {pro_strictness}/5")
 
-        PROMPT = f"""You are a professional examiner with 20+ years of experience correcting school and university exam papers.
-You are now grading ONE student's complete answer sheet.
+        PROMPT = f"""You are a professional academic examiner and senior teacher with 20+ years experience grading exam papers.
+You are grading ONE student's complete answer sheet from start to finish.
 
-════════════════════════════════════════
-STRICTNESS INSTRUCTION — THIS OVERRIDES ALL DEFAULTS
-════════════════════════════════════════
-{pro_strictness_instruction}
+════════════════════════════════════════════════════
+STRICTNESS: {pro_strictness_instruction}
+════════════════════════════════════════════════════
 
-════════════════════════════════════════
-STEP 1: READ THE QUESTION PAPER
-════════════════════════════════════════
-QUESTION PAPER (read carefully — this defines marks and structure):
+════════════════════════════════════════════════════
+QUESTION PAPER
+════════════════════════════════════════════════════
 {req.question_paper_text[:4000]}
+
+════════════════════════════════════════════════════
+{pro_marks_table}
+════════════════════════════════════════════════════
 
 REFERENCE / MARKING SCHEME:
 {req.model_answers_text[:2000] if req.model_answers_text else "Not provided — grade based on academic correctness and completeness."}
 
 PAPER TOTAL MARKS: {req.total_marks}
 
-════════════════════════════════════════
-STEP 2: READ THE STUDENT'S ANSWER SHEET
-════════════════════════════════════════
-The student's answers appear page-by-page below. Each page is labelled "── Page N ──".
-The student has written question numbers (like "Q1", "1.", "Ans 2b") at the start of each answer.
-YOUR MOST IMPORTANT JOB is to correctly map each student answer to the correct question in the paper.
-
-HOW TO IDENTIFY WHICH QUESTION IS ANSWERED WHERE:
-- Look for explicit question labels the student wrote (e.g. "Q.1", "Ans. 3b", "1a)", "Question 2")
-- If no label is visible, match the content of the answer to the most likely question
-- Note the PAGE NUMBER where each answer appears for annotation purposes
-- Group sub-parts (1a, 1b, 1c) under the parent question number
-
-STUDENT ANSWER SHEET:
+════════════════════════════════════════════════════
+STUDENT ANSWER SHEET (page by page)
+════════════════════════════════════════════════════
 {student_text}
 
-════════════════════════════════════════
-STEP 3: GRADE USING THESE STRICT RULES
-════════════════════════════════════════
+════════════════════════════════════════════════════
+EXAMINER INSTRUCTIONS
+════════════════════════════════════════════════════
 
-RULE 1 — UNDERSTAND PAPER STRUCTURE
-  a) Identify all sections (Section A, B, Module 1, etc.)
-  b) Identify MANDATORY questions (must attempt) vs CHOICE sections ("attempt any X out of Y")
-  c) Identify OR questions (student picks ONE of two)
+STEP 1 — MAP STUDENT ANSWERS:
+- Find every answer the student wrote (check all pages)
+- Match each answer to its question using: labels the student wrote (Q1, 1a, Ans 2b) AND content matching
+- Note the page number each answer appears on
+- Students sometimes write answers out of order — find ALL of them
 
-RULE 2 — HANDLE CHOICE / OR QUESTIONS CORRECTLY
-  a) "Attempt any X out of Y" section: grade ONLY the FIRST X answers the student wrote.
-     Additional answers beyond X: marks_awarded = 0, is_counted = false.
-  b) OR questions: grade ONLY the one the student chose (first if both attempted).
-     Second OR option: marks_awarded = 0, is_counted = false.
-  c) Mandatory question NOT attempted: include with marks_awarded = 0, status = "zero", student_answer_summary = "Not attempted".
+STEP 2 — ASSIGN marks_total (CRITICAL):
+- marks_total = the marks THIS question is worth as per the question paper
+- NEVER assign the same marks_total to all questions (e.g. NOT all = 5.0)
+- NEVER calculate marks_total = paper_total ÷ number_of_questions
+- If Q1 = 2 marks and Q2 = 10 marks, marks_total must reflect EXACTLY that
 
-RULE 3 — MARKS ALLOCATION (be strict — no charity marks)
-  * marks_total for each question MUST EXACTLY match the question paper.
-  * NEVER award more than marks_total for any question.
-  * Full marks: answer is complete, accurate, ALL key points present.
-  * Partial marks: core idea correct but — explanation incomplete, wrong units, key term missing, diagram absent, formula right but calculation wrong.
-  * Zero: wrong answer, completely blank, or answer just repeats the question.
-  * For calculations: award method marks even if final answer is wrong.
-  * For theory/definitions: check key terms, logical structure, completeness.
-  * Vague or incomplete bullets = partial only. Copied definition with no explanation = 50% max.
-  * MARKS MAP RULE: Before grading, identify marks_total for EACH question from the paper. Your marks_total values MUST exactly match what the paper specifies. Never guess or split marks equally.
-  * ANTI-UNIFORMITY RULE: Each question is graded on its own merit. Deductions must differ per question based on what was specifically wrong. NEVER assign the same marks_deducted to all questions.
+STEP 3 — GRADE LIKE A REAL TEACHER:
+- Grade each answer individually based on its actual content
+- Full marks: all key points, correct formula/derivation, complete explanation
+- Partial marks: right idea but missing key terms, units, steps, or diagrams
+- Zero: wrong, blank, or just repeats the question
+- For calculations: award method marks even if final answer is wrong
+- For theory: check key terms, logical structure, and completeness
 
-RULE 4 — SPECIFIC PROFESSIONAL FEEDBACK
-  * Be precise: "You wrote X but the correct answer is Y because Z."
-  * State exactly what was missing: "Key term 'osmosis' absent — deducted 1 mark."
-  * Give one specific, actionable improvement tip per question.
+STEP 4 — HANDLE CHOICE/OR QUESTIONS:
+- "Attempt any X out of Y": grade first X answers. Rest: is_counted=false, marks_awarded=0
+- "OR" questions: grade the student's chosen answer. Other option: is_counted=false, marks_awarded=0
+- Mandatory question not attempted: marks_awarded=0, status="not_attempted", is_counted=true
 
-RULE 5 — SCORING
-  * total_awarded = sum of marks_awarded for is_counted=true questions ONLY.
-  * total_possible = {req.total_marks} exactly — DO NOT change this.
-  * percentage = (total_awarded / {req.total_marks}) * 100, rounded to 1 decimal.
+STEP 5 — WRITE PROFESSIONAL FEEDBACK:
+- Each question must have UNIQUE, SPECIFIC feedback — never copy-paste
+- Name exactly what was missing: formula, condition, unit, diagram, step
+- what_was_correct: quote the actual correct things the student wrote
+{req.model_answers_text[:2000] if req.model_answers_text else "Not provided — grade based on academic correctness and completeness."}
 
-════════════════════════════════════════
-OUTPUT — valid JSON only, no markdown:
-════════════════════════════════════════
+PAPER TOTAL MARKS: {req.total_marks}
+
+════════════════════════════════════════════════════
+OUTPUT — Valid JSON only, no markdown fences:
+════════════════════════════════════════════════════
 {{
   "questions": [
     {{
       "question_no": "1a",
       "question": "Full question text exactly as it appears in the paper",
       "section": "Section A",
-      "marks_awarded": 2,
-      "marks_total": 5,
+      "marks_awarded": 8.0,
+      "marks_total": 10.0,
       "status": "partial",
       "is_counted": true,
-      "student_answer_summary": "Brief accurate summary of what the student actually wrote for this question",
+      "student_answer_summary": "What the student actually wrote for this question (20-30 words)",
       "mistakes": [
         {{"text": "specific wrong phrase or concept the student wrote", "marks_deducted": 2, "comment": "Explanation of why this is wrong"}}
       ],
@@ -2109,7 +2295,7 @@ OUTPUT — valid JSON only, no markdown:
       ],
       "feedback": "Specific teacher feedback: what was right, what was wrong, what was missing",
       "improvement": "One specific actionable tip to improve this answer",
-      "red_pen_comment": "Violation note (choice rule broken, extra answer, etc.) or empty string",
+      "red_pen_comment": "Margin note (max 10 words)",
       "page_no": 1
     }}
   ],
@@ -2117,19 +2303,12 @@ OUTPUT — valid JSON only, no markdown:
   "total_possible": {req.total_marks},
   "percentage": 0.0,
   "grade": "F",
-  "overall_feedback": "Comprehensive overall assessment of student performance.",
+  "overall_feedback": "3-4 sentence summary of overall performance, strongest area, main weakness, revision advice",
   "mark_loss_analysis": [
-    "Q1a: Key term 'osmosis' missing (-1 mark)",
-    "Q2b: Wrong formula used, correct working method (+2 method marks, -3 for wrong answer)"
+    "Q1: -2 marks — missing SI units and temperature condition",
+    "Q2: -5 marks — derivation incomplete, final result not written"
   ]
-}}
-
-CRITICAL REMINDERS:
-- total_possible MUST be {req.total_marks} — the paper's declared total, never change it.
-- total_awarded = sum of marks_awarded for is_counted=true questions only.
-- Recalculate percentage accurately.
-- Every question from the paper must appear in the output (either graded or as "Not attempted").
-- The student_answer_summary field must describe what the student ACTUALLY wrote, not what they should have written."""
+}}"""
         
         import json, requests as req_lib
         import time as _time
@@ -2226,6 +2405,28 @@ CRITICAL REMINDERS:
         # Normalize and enrich questions with marks reduced and genuine reason
         if isinstance(eval_data.get("questions"), list):
             eval_data["questions"] = [_normalize_question_obj(q) for q in eval_data["questions"]]
+
+            # Reconcile against authoritative marks map if present
+            if pro_auth_marks:
+                for q in eval_data["questions"]:
+                    q_no = str(q.get("question_no", ""))
+                    auth_m = _lookup_marks(q_no, pro_auth_marks, default_mark=None)
+                    if auth_m is not None:
+                        q["marks_total"] = auth_m
+                        if float(q.get("marks_awarded", 0)) > auth_m:
+                            q["marks_awarded"] = auth_m
+                        q["marks_reduced"] = max(0.0, round(auth_m - float(q.get("marks_awarded", 0)), 1))
+            else:
+                distinct_totals = {round(float(q.get("marks_total", 0)), 1) for q in eval_data["questions"] if q.get("marks_total")}
+                if len(distinct_totals) == 1 and len(eval_data["questions"]) > 1:
+                    single_val = list(distinct_totals)[0]
+                    if single_val not in (1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0):
+                        clean_val = round(single_val) or 5.0
+                        for q in eval_data["questions"]:
+                            q["marks_total"] = clean_val
+                            if float(q.get("marks_awarded", 0)) > clean_val:
+                                q["marks_awarded"] = clean_val
+                            q["marks_reduced"] = max(0.0, round(clean_val - float(q.get("marks_awarded", 0)), 1))
 
         # ── CRITICAL FIX: Override totals with authoritative values ──────────────
         # The AI may return wrong total_possible. Always use the paper's declared marks.

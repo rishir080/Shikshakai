@@ -22,6 +22,8 @@ import {
   Sliders,
   BarChart3,
   ArrowUpRight,
+  Paperclip,
+  FileUp,
 } from 'lucide-react';
 
 // ── Bloom Level Color & Theme Definitions ────────────────────────────────────
@@ -231,6 +233,8 @@ export default function BloomsView() {
   const [subject, setSubject] = useState(SAMPLE_PAPERS[0].subject);
   const [level, setLevel] = useState(SAMPLE_PAPERS[0].level);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [singleQuestionFile, setSingleQuestionFile] = useState<File | null>(null);
+  const [extractingSingleFile, setExtractingSingleFile] = useState(false);
 
   // Analysis / execution states
   const [loading, setLoading] = useState(false);
@@ -248,8 +252,11 @@ export default function BloomsView() {
 
   // Educator calibration state (maps question ID to calibrated level 1..6)
   const [calibrations, setCalibrations] = useState<Record<string, number>>({});
+  // Simple view mode: shows only the exact Bloom level and why (clean, minimal)
+  const [simpleMode, setSimpleMode] = useState<boolean>(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const singleFileInputRef = useRef<HTMLInputElement>(null);
 
   // Trigger quick toast
   const showToast = (msg: string) => {
@@ -373,9 +380,73 @@ export default function BloomsView() {
     } catch (err: any) {
       console.error('[BLOOM] Single question error:', err);
       setError(err.message || 'Failed to classify question.');
-    } finally {
       setLoading(false);
       setLoadingStep('');
+    }
+  };
+
+  // Handle single question file upload & OCR
+  const handleSingleQuestionFileUpload = async (file: File) => {
+    setSingleQuestionFile(file);
+    setExtractingSingleFile(true);
+    setError(null);
+    showToast(`Scanning question from ${file.name}...`);
+
+    try {
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const base64 = (reader.result as string).split(',')[1];
+            const res = await fetch('/api/ocr', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ imageBase64: base64, mimeType: file.type }),
+            });
+            const data = await res.json();
+            if (res.ok && data.text) {
+              setSingleQuestion(data.text.trim());
+              showToast('Question scanned successfully from image!');
+            } else {
+              throw new Error(data.detail || data.error || 'Failed to extract text from image');
+            }
+          } catch (e: any) {
+            setError('OCR failed: ' + (e.message || 'Could not scan image'));
+          } finally {
+            setExtractingSingleFile(false);
+          }
+        };
+        reader.readAsDataURL(file);
+      } else {
+        // PDF or TXT
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('subject', subject);
+        formData.append('level', level);
+
+        const res = await fetch('/api/bloom/analyze-upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.message || 'Failed to extract text from document');
+        }
+
+        const data = await res.json();
+        if (data.extracted_text) {
+          setSingleQuestion(data.extracted_text.trim());
+          showToast('Question text extracted from document!');
+        } else if (data.questions && data.questions[0]?.text) {
+          setSingleQuestion(data.questions[0].text);
+          showToast('Question extracted!');
+        }
+        setExtractingSingleFile(false);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to extract question from file');
+      setExtractingSingleFile(false);
     }
   };
 
@@ -938,9 +1009,72 @@ export default function BloomsView() {
             {/* TAB 2: SINGLE QUESTION AUDITOR */}
             {activeTab === 'single' && (
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                  Enter Single Question to Audit
-                </label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.8 }}>
+                    Enter Single Question to Audit
+                  </label>
+                  <div>
+                    <input
+                      ref={singleFileInputRef}
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.webp,.pdf,.txt"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleSingleQuestionFileUpload(e.target.files[0]);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => singleFileInputRef.current?.click()}
+                      disabled={extractingSingleFile || loading}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        background: 'rgba(124, 111, 255, 0.15)',
+                        border: '1px solid rgba(124, 111, 255, 0.35)',
+                        borderRadius: 8,
+                        padding: '5px 12px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: '#a5b4fc',
+                        cursor: extractingSingleFile ? 'wait' : 'pointer',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <Paperclip size={13} />
+                      <span>{extractingSingleFile ? 'Scanning Question Image/PDF...' : 'Upload/Scan Single Question (Image/PDF)'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {singleQuestionFile && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginBottom: 10,
+                      padding: '8px 12px',
+                      background: 'rgba(99, 102, 241, 0.1)',
+                      border: '1px solid rgba(99, 102, 241, 0.25)',
+                      borderRadius: 8,
+                      fontSize: 12,
+                      color: '#c7d2fe',
+                    }}
+                  >
+                    <FileUp size={14} color="#818cf8" />
+                    <span>Uploaded: <strong>{singleQuestionFile.name}</strong></span>
+                    {extractingSingleFile ? (
+                      <span style={{ color: '#fbbf24', marginLeft: 'auto' }}>⚡ Extracting Question via OCR...</span>
+                    ) : (
+                      <span style={{ color: '#34d399', marginLeft: 'auto' }}>✓ Ready for Audit</span>
+                    )}
+                  </div>
+                )}
+
                 <textarea
                   value={singleQuestion}
                   onChange={(e) => setSingleQuestion(e.target.value)}
@@ -962,7 +1096,7 @@ export default function BloomsView() {
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
                   <button
                     onClick={handleAnalyzeSingleQuestion}
-                    disabled={loading}
+                    disabled={loading || extractingSingleFile}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -1103,7 +1237,55 @@ export default function BloomsView() {
         const summary = effectiveSummary || result.summary;
         return (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+            {/* View Mode Toggle: Simple vs Detailed */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>Display Mode:</span>
+                <div style={{ display: 'inline-flex', background: 'rgba(0, 0, 0, 0.4)', borderRadius: 10, padding: 3, border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                  <button
+                    onClick={() => setSimpleMode(true)}
+                    style={{
+                      background: simpleMode ? 'linear-gradient(135deg, #7c6fff 0%, #6366f1 100%)' : 'transparent',
+                      color: simpleMode ? '#ffffff' : '#94a3b8',
+                      border: 'none',
+                      borderRadius: 7,
+                      padding: '5px 14px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    ⚡ Simple Mode (Level &amp; Reason Only)
+                  </button>
+                  <button
+                    onClick={() => setSimpleMode(false)}
+                    style={{
+                      background: !simpleMode ? 'linear-gradient(135deg, #7c6fff 0%, #6366f1 100%)' : 'transparent',
+                      color: !simpleMode ? '#ffffff' : '#94a3b8',
+                      border: 'none',
+                      borderRadius: 7,
+                      padding: '5px 14px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    📊 Full Analytics &amp; Calibration
+                  </button>
+                </div>
+              </div>
+
+              {simpleMode && (
+                <span style={{ fontSize: 11.5, color: '#94a3b8' }}>
+                  Showing direct Bloom Level + Why explanation only
+                </span>
+              )}
+            </div>
+
             {/* Top Metric Cards */}
+            {!simpleMode && (
             <div
               style={{
                 display: 'grid',
@@ -1239,238 +1421,246 @@ export default function BloomsView() {
                 NEP 2020 &amp; Outcome Based Education
               </div>
             </div>
-          </div>
-
-          {/* ── Humanized Cognitive Perception & Calibration Banner ── */}
-          <div
-            style={{
-              background: 'linear-gradient(135deg, rgba(124, 111, 255, 0.08) 0%, rgba(6, 182, 212, 0.08) 100%)',
-              border: '1px solid rgba(124, 111, 255, 0.25)',
-              borderRadius: 16,
-              padding: '16px 20px',
-              marginBottom: 24,
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 14,
-            }}
-          >
-            <Sparkles size={22} style={{ color: '#818cf8', flexShrink: 0, marginTop: 2 }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
-                <strong style={{ fontSize: 13.5, color: '#f8fafc', fontWeight: 700 }}>
-                  Humanized Cognitive Spectrum &amp; Teacher Calibration
-                </strong>
-                {summary.calibration_count !== undefined && summary.calibration_count > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 11.5, background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', padding: '3px 10px', borderRadius: 12, border: '1px solid rgba(245, 158, 11, 0.3)', fontWeight: 600 }}>
-                      👨‍🏫 {summary.calibration_count} Question(s) Calibrated for Classroom
-                    </span>
-                    <button
-                      onClick={handleResetAllCalibrations}
-                      style={{ fontSize: 11, background: 'transparent', border: 'none', color: '#94a3b8', textDecoration: 'underline', cursor: 'pointer' }}
-                    >
-                      Reset All
-                    </button>
-                  </div>
-                )}
-              </div>
-              <p style={{ margin: 0, fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>
-                {summary.humanized_perception_note ||
-                  "In actual classroom reality, cognitive demand shifts depending on prior exposure and scaffolding. What is 'Apply' (L3) to an unguided student behaves as 'Remember' (L1) if practiced verbatim. ShikshakAI models each question along a pedagogical spectrum with multi-perspective educator rationales and allows interactive teacher calibration."}
-              </p>
+            {/* End Top Metric Cards */}
             </div>
-          </div>
+            )}
 
-          {/* ── Interactive 6-Level Bloom's Distribution Cards ── */}
-          <div
-            style={{
-              background: 'rgba(15, 23, 42, 0.85)',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              borderRadius: 18,
-              padding: 24,
-              marginBottom: 24,
-              boxShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#f8fafc' }}>
-                  Bloom&apos;s Taxonomy Cognitive Breakdown (L1 – L6)
-                </h3>
-                <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
-                  Click on any level to filter questions below
-                </p>
-              </div>
-
-              {selectedLevelFilter !== 'all' && (
-                <button
-                  onClick={() => setSelectedLevelFilter('all')}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: '4px 10px',
-                    borderRadius: 6,
-                    background: 'rgba(255, 255, 255, 0.08)',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    color: '#e2e8f0',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Clear Filter &times;
-                </button>
-              )}
-            </div>
-
-            {/* Proportional Segmented Bar */}
+            {/* ── Humanized Cognitive Perception & Calibration Banner ── */}
+            {!simpleMode && (
             <div
               style={{
-                height: 12,
-                borderRadius: 8,
-                background: 'rgba(0, 0, 0, 0.4)',
-                overflow: 'hidden',
+                background: 'linear-gradient(135deg, rgba(124, 111, 255, 0.08) 0%, rgba(6, 182, 212, 0.08) 100%)',
+                border: '1px solid rgba(124, 111, 255, 0.25)',
+                borderRadius: 16,
+                padding: '16px 20px',
+                marginBottom: 24,
                 display: 'flex',
-                marginBottom: 20,
+                alignItems: 'flex-start',
+                gap: 14,
               }}
             >
-              {[1, 2, 3, 4, 5, 6].map((l) => {
-                const item = summary.distribution[String(l)];
-                const pct = item ? item.percentage : 0;
-                const meta = BLOOM_LEVELS_META[l];
-                if (pct <= 0) return null;
-                return (
-                  <div
-                    key={l}
-                    title={`L${l} ${meta.name}: ${pct}%`}
-                    style={{
-                      width: `${pct}%`,
-                      background: meta.color,
-                      height: '100%',
-                      transition: 'width 0.4s ease',
-                    }}
-                  />
-                );
-              })}
+              <Sparkles size={22} style={{ color: '#818cf8', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+                  <strong style={{ fontSize: 13.5, color: '#f8fafc', fontWeight: 700 }}>
+                    Humanized Cognitive Spectrum &amp; Teacher Calibration
+                  </strong>
+                  {summary.calibration_count !== undefined && summary.calibration_count > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 11.5, background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', padding: '3px 10px', borderRadius: 12, border: '1px solid rgba(245, 158, 11, 0.3)', fontWeight: 600 }}>
+                        👨‍🏫 {summary.calibration_count} Question(s) Calibrated for Classroom
+                      </span>
+                      <button
+                        onClick={handleResetAllCalibrations}
+                        style={{ fontSize: 11, background: 'transparent', border: 'none', color: '#94a3b8', textDecoration: 'underline', cursor: 'pointer' }}
+                      >
+                        Reset All
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <p style={{ margin: 0, fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>
+                  {summary.humanized_perception_note ||
+                    "In actual classroom reality, cognitive demand shifts depending on prior exposure and scaffolding. What is 'Apply' (L3) to an unguided student behaves as 'Remember' (L1) if practiced verbatim. ShikshakAI models each question along a pedagogical spectrum with multi-perspective educator rationales and allows interactive teacher calibration."}
+                </p>
+              </div>
             </div>
+            )}
 
-            {/* 6 Individual Cards */}
+            {/* ── Interactive 6-Level Bloom's Distribution Cards ── */}
+            {!simpleMode && (
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.85)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: 18,
+                padding: 24,
+                marginBottom: 24,
+                boxShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#f8fafc' }}>
+                    Bloom&apos;s Taxonomy Cognitive Breakdown (L1 – L6)
+                  </h3>
+                  <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
+                    Click on any level to filter questions below
+                  </p>
+                </div>
+
+                {selectedLevelFilter !== 'all' && (
+                  <button
+                    onClick={() => setSelectedLevelFilter('all')}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      color: '#e2e8f0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Clear Filter &times;
+                  </button>
+                )}
+              </div>
+
+              {/* Proportional Segmented Bar */}
+              <div
+                style={{
+                  height: 12,
+                  borderRadius: 8,
+                  background: 'rgba(0, 0, 0, 0.4)',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  marginBottom: 20,
+                }}
+              >
+                {[1, 2, 3, 4, 5, 6].map((l) => {
+                  const item = summary.distribution[String(l)];
+                  const pct = item ? item.percentage : 0;
+                  const meta = BLOOM_LEVELS_META[l];
+                  if (pct <= 0) return null;
+                  return (
+                    <div
+                      key={l}
+                      title={`L${l} ${meta.name}: ${pct}%`}
+                      style={{
+                        width: `${pct}%`,
+                        background: meta.color,
+                        height: '100%',
+                        transition: 'width 0.4s ease',
+                      }}
+                    />
+                  );
+                })}
+              </div>
+
+              {/* 6 Individual Cards */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                  gap: 12,
+                }}
+              >
+                {[1, 2, 3, 4, 5, 6].map((l) => {
+                  const meta = BLOOM_LEVELS_META[l];
+                  const item = summary.distribution[String(l)];
+                  const count = item ? item.count : 0;
+                  const pct = item ? item.percentage : 0;
+                  const isSelected = selectedLevelFilter === l;
+
+                  return (
+                    <div
+                      key={l}
+                      onClick={() => setSelectedLevelFilter(isSelected ? 'all' : l)}
+                      style={{
+                        background: isSelected ? meta.bg : 'rgba(255, 255, 255, 0.02)',
+                        border: isSelected ? `2px solid ${meta.color}` : `1px solid ${meta.border}`,
+                        borderRadius: 14,
+                        padding: 14,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              color: meta.color,
+                              background: meta.lightBg,
+                              padding: '2px 6px',
+                              borderRadius: 6,
+                            }}
+                          >
+                            L{l} &bull; {meta.category}
+                          </span>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{pct}%</span>
+                        </div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: meta.color, marginBottom: 2 }}>
+                          {meta.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                          {count} {count === 1 ? 'question' : 'questions'}
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10, fontSize: 10, color: '#64748b', fontStyle: 'italic' }}>
+                        {meta.verbs.slice(0, 3).join(', ')}...
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            )}
+
+            {/* ── Pedagogical Critique & Recommendations ── */}
+            {!simpleMode && (
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                gap: 12,
+                gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+                gap: 16,
+                marginBottom: 24,
               }}
             >
-              {[1, 2, 3, 4, 5, 6].map((l) => {
-                const meta = BLOOM_LEVELS_META[l];
-                const item = summary.distribution[String(l)];
-                const count = item ? item.count : 0;
-                const pct = item ? item.percentage : 0;
-                const isSelected = selectedLevelFilter === l;
-
-                return (
-                  <div
-                    key={l}
-                    onClick={() => setSelectedLevelFilter(isSelected ? 'all' : l)}
-                    style={{
-                      background: isSelected ? meta.bg : 'rgba(255, 255, 255, 0.02)',
-                      border: isSelected ? `2px solid ${meta.color}` : `1px solid ${meta.border}`,
-                      borderRadius: 14,
-                      padding: 14,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 700,
-                            color: meta.color,
-                            background: meta.lightBg,
-                            padding: '2px 6px',
-                            borderRadius: 6,
-                          }}
-                        >
-                          L{l} &bull; {meta.category}
-                        </span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{pct}%</span>
-                      </div>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: meta.color, marginBottom: 2 }}>
-                        {meta.name}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                        {count} {count === 1 ? 'question' : 'questions'}
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10, fontSize: 10, color: '#64748b', fontStyle: 'italic' }}>
-                      {meta.verbs.slice(0, 3).join(', ')}...
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ── Pedagogical Critique & Recommendations ── */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-              gap: 16,
-              marginBottom: 24,
-            }}
-          >
-            {/* Pedagogical Critique Card */}
-            <div
-              style={{
-                background: 'rgba(15, 23, 42, 0.85)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: 16,
-                padding: 22,
-                boxShadow: '0 8px 30px rgba(0, 0, 0, 0.3)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <BookOpen size={18} color="#818cf8" />
-                <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
-                  Pedagogical Audit &amp; Cognitive Critique
-                </h4>
+              {/* Pedagogical Critique Card */}
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.85)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 16,
+                  padding: 22,
+                  boxShadow: '0 8px 30px rgba(0, 0, 0, 0.3)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <BookOpen size={18} color="#818cf8" />
+                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
+                    Pedagogical Audit &amp; Cognitive Critique
+                  </h4>
+                </div>
+                <p style={{ margin: 0, fontSize: 13, color: '#cbd5e1', lineHeight: 1.65 }}>
+                  {summary.pedagogical_critique}
+                </p>
               </div>
-              <p style={{ margin: 0, fontSize: 13, color: '#cbd5e1', lineHeight: 1.65 }}>
-                {summary.pedagogical_critique}
-              </p>
-            </div>
 
-            {/* Recommendations Card */}
-            <div
-              style={{
-                background: 'rgba(15, 23, 42, 0.85)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: 16,
-                padding: 22,
-                boxShadow: '0 8px 30px rgba(0, 0, 0, 0.3)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <Lightbulb size={18} color="#f59e0b" />
-                <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
-                  Educator Recommendations to Elevate Balance
-                </h4>
+              {/* Recommendations Card */}
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.85)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 16,
+                  padding: 22,
+                  boxShadow: '0 8px 30px rgba(0, 0, 0, 0.3)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <Lightbulb size={18} color="#f59e0b" />
+                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
+                    Educator Recommendations to Elevate Balance
+                  </h4>
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#cbd5e1', lineHeight: 1.65 }}>
+                  {summary.recommendations.map((rec, i) => (
+                    <li key={i} style={{ marginBottom: 6 }}>
+                      {rec}
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#cbd5e1', lineHeight: 1.65 }}>
-                {summary.recommendations.map((rec, i) => (
-                  <li key={i} style={{ marginBottom: 6 }}>
-                    {rec}
-                  </li>
-                ))}
-              </ul>
             </div>
-          </div>
+            )}
 
           {/* ── Questions Explorer Header & Filters ── */}
           <div
@@ -1742,6 +1932,7 @@ export default function BloomsView() {
                   </div>
 
                   {/* Human Cognitive Spectrum Continuum */}
+                  {!simpleMode && (
                   <div
                     style={{
                       background: 'rgba(255, 255, 255, 0.02)',
@@ -1859,6 +2050,7 @@ export default function BloomsView() {
                       </div>
                     )}
                   </div>
+                  )}
 
                   {/* Ambiguity / Borderline Notice */}
                   {q.is_ambiguous && q.ambiguity_note && (
