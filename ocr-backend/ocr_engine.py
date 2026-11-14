@@ -29,16 +29,12 @@ def _preprocess_for_ocr(img_pil: Image.Image) -> Image.Image:
     Enhance image quality before OCR:
     1. Convert to grayscale
     2. Upscale small images (TrOCR prefers >= 300 DPI equivalent)
-    3. OTSU adaptive thresholding (handles uneven lighting)
-    Cleans the image using Adaptive Thresholding to eliminate mobile camera shadows
-    and outputs a pure B&W deskewed image so TrOCR/Tesseract don't hallucinate.
+    3. Deskew using Hough Line Transform on a binary mask
+    Returns a smooth grayscale image (not binarized!) so TrOCR retains sub-pixel gradients.
     """
     img_np = np.array(img_pil.convert("RGB"))
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
     
-    # Adaptive thresholding elegantly handles heavy camera shadows and uneven lighting
-    # It turns the background pure white and ink pure black without destroying text
-    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
     h, w = gray.shape
     if w < 1000:
         scale = 1000 / w
@@ -47,34 +43,40 @@ def _preprocess_for_ocr(img_pil: Image.Image) -> Image.Image:
     # --- Denoise (mild, preserves ink strokes) ---
     gray = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
 
-    # --- Deskew ---
-    binary = _deskew(thresh)
+    # Create a binary mask purely for calculating the skew angle
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
 
-    return Image.fromarray(binary)
+    # --- Deskew the Grayscale image ---
+    gray_deskewed = _deskew(gray, thresh)
+
+    # Convert back to RGB as TrOCRProcessor expects 3 channels
+    return Image.fromarray(gray_deskewed).convert("RGB")
 
 
-def _deskew(binary_np: np.ndarray) -> np.ndarray:
-    """Detect and correct skew angle using Hough line transform."""
+def _deskew(image: np.ndarray, binary_mask: np.ndarray) -> np.ndarray:
+    """Detect and correct skew angle using Hough line transform on a binary mask, applying it to the main image."""
     try:
-        coords = np.column_stack(np.where(binary_np < 128))
+        coords = np.column_stack(np.where(binary_mask < 128))
         if len(coords) < 50:
-            return binary_np
+            return image
         angle = cv2.minAreaRect(coords)[-1]
         if angle < -45:
             angle = -(90 + angle)
         else:
             angle = -angle
         if abs(angle) < 0.3:  # Skip tiny adjustments
-            return binary_np
-        (h, w) = binary_np.shape
+            return image
+        (h, w) = image.shape
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rotated = cv2.warpAffine(binary_np, M, (w, h),
+        # Warp the target image with a white border (255)
+        rotated = cv2.warpAffine(image, M, (w, h),
                                   flags=cv2.INTER_CUBIC,
-                                  borderMode=cv2.BORDER_REPLICATE)
+                                  borderMode=cv2.BORDER_CONSTANT,
+                                  borderValue=(255, 255, 255))
         return rotated
     except Exception:
-        return binary_np
+        return image
 
 
 def _split_into_lines(img_pil: Image.Image):
